@@ -14,6 +14,7 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPUASMPRINTER_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUASMPRINTER_H
 
+#include "AMDGPUResourceUsageAnalysis.h"
 #include "SIProgramInfo.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 
@@ -109,6 +110,17 @@ public:
   bool emitPseudoExpansionLowering(MCStreamer &OutStreamer,
                                    const MachineInstr *MI);
 
+  /// Emit function resource information
+  ///
+  /// AMDGPUResourceUsageAnalysis gathers resource usage on a per-function
+  /// granularity. However, some resource info has to be assigned the call
+  /// transitive maximum or accumulative. For example, if A calls B and B's VGPR
+  /// usage exceeds A's, A should be assigned B's VGPR usage. Furthermore,
+  /// functions with indirect calls should be assigned the module level maximum.
+  void EmitResourceInfo(
+      const MachineFunction &MF,
+      const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI);
+
   /// Implemented in AMDGPUMCInstLower.cpp
   void emitInstruction(const MachineInstr *MI) override;
 
@@ -130,6 +142,10 @@ public:
 
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
                        const char *ExtraCode, raw_ostream &O) override;
+
+  int32_t MaxVGPR;
+  int32_t MaxAGPR;
+  int32_t MaxSGPR;
 
 protected:
   void getAnalysisUsage(AnalysisUsage &AU) const override;

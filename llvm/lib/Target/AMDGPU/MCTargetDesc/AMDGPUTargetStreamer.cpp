@@ -278,6 +278,27 @@ void AMDGPUTargetAsmStreamer::emitAMDGPULDS(MCSymbol *Symbol, unsigned Size,
      << Alignment.value() << '\n';
 }
 
+void AMDGPUTargetAsmStreamer::EmitResourceInfo(
+    const MCExpr *NumVGPR, const MCExpr *NumAGPR, const MCExpr *NumExplicitSGPR,
+    const MCExpr *PrivateSegmentSize, const MCExpr *UsesVCC,
+    const MCExpr *UsesFlatScratch, const MCExpr *HasDynamicallySizedStack,
+    const MCExpr *HasRecursion, const MCExpr *HasIndirectCall) {
+#define PRINT_RES_INFO(DIRECTIVE, ARG) \
+  OS << '\t' << DIRECTIVE << " "; \
+  ARG->print(OS, getContext().getAsmInfo()); \
+  OS << '\n'
+
+  PRINT_RES_INFO(".amdgpu_num_vgpr", NumVGPR);
+  PRINT_RES_INFO(".amdgpu_num_agpr", NumAGPR);
+  PRINT_RES_INFO(".amdgpu_num_sgpr", NumExplicitSGPR);
+  PRINT_RES_INFO(".amdgpu_private_seg_size", PrivateSegmentSize);
+  PRINT_RES_INFO(".amdgpu_uses_vcc", UsesVCC);
+  PRINT_RES_INFO(".amdgpu_has_flat_scratch", UsesFlatScratch);
+  PRINT_RES_INFO(".amdgpu_has_dyn_size_stack", HasDynamicallySizedStack);
+  PRINT_RES_INFO(".amdgpu_has_recursion", HasRecursion);
+  PRINT_RES_INFO(".amdgpu_has_indirect_call", HasIndirectCall);
+}
+
 bool AMDGPUTargetAsmStreamer::EmitISAVersion() {
   OS << "\t.amd_amdgpu_isa \"" << getTargetID()->toString() << "\"\n";
   return true;
@@ -765,6 +786,22 @@ void AMDGPUTargetELFStreamer::emitAMDGPULDS(MCSymbol *Symbol, unsigned Size,
 
   SymbolELF->setIndex(ELF::SHN_AMDGPU_LDS);
   SymbolELF->setSize(MCConstantExpr::create(Size, getContext()));
+}
+
+void AMDGPUTargetELFStreamer::EmitResourceInfo(
+    const MCExpr *NumVGPR, const MCExpr *NumAGPR, const MCExpr *NumExplicitSGPR,
+    const MCExpr *PrivateSegmentSize, const MCExpr *UsesVCC,
+    const MCExpr *UsesFlatScratch, const MCExpr *HasDynamicallySizedStack,
+    const MCExpr *HasRecursion, const MCExpr *HasIndirectCall) {
+  getStreamer().emitValue(NumVGPR,                  /* Size */ 4);
+  getStreamer().emitValue(NumAGPR,                  /* Size */ 4);
+  getStreamer().emitValue(NumExplicitSGPR,          /* Size */ 4);
+  getStreamer().emitValue(PrivateSegmentSize,       /* Size */ 8);
+  getStreamer().emitValue(UsesVCC,                  /* Size */ 1);
+  getStreamer().emitValue(UsesFlatScratch,          /* Size */ 1);
+  getStreamer().emitValue(HasDynamicallySizedStack, /* Size */ 1);
+  getStreamer().emitValue(HasRecursion,             /* Size */ 1);
+  getStreamer().emitValue(HasIndirectCall,          /* Size */ 1);
 }
 
 bool AMDGPUTargetELFStreamer::EmitISAVersion() {

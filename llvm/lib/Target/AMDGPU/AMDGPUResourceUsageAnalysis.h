@@ -15,8 +15,9 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPURESOURCEUSAGEANALYSIS_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPURESOURCEUSAGEANALYSIS_H
 
-#include "llvm/Analysis/CallGraphSCCPass.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace llvm {
 
@@ -24,12 +25,12 @@ class GCNSubtarget;
 class MachineFunction;
 class TargetMachine;
 
-struct AMDGPUResourceUsageAnalysis : public ModulePass {
+struct AMDGPUResourceUsageAnalysis : public MachineFunctionPass {
   static char ID;
 
 public:
   // Track resource usage for callee functions.
-  struct SIFunctionResourceInfo {
+  struct FunctionResourceInfo {
     // Track the number of explicitly used VGPRs. Special registers reserved at
     // the end are tracked separately.
     int32_t NumVGPR = 0;
@@ -42,6 +43,8 @@ public:
     bool HasRecursion = false;
     bool HasIndirectCall = false;
 
+    SmallVector<const Function *, 16> Callees;
+
     int32_t getTotalNumSGPRs(const GCNSubtarget &ST) const;
     // Total number of VGPRs is actually a combination of AGPR and VGPR
     // depending on architecture - and some alignment constraints
@@ -50,33 +53,17 @@ public:
     int32_t getTotalNumVGPRs(const GCNSubtarget &ST) const;
   };
 
-  AMDGPUResourceUsageAnalysis() : ModulePass(ID) {}
+  AMDGPUResourceUsageAnalysis() : MachineFunctionPass(ID) {}
 
-  bool doInitialization(Module &M) override {
-    CallGraphResourceInfo.clear();
-    return ModulePass::doInitialization(M);
-  }
+  bool runOnMachineFunction(MachineFunction &MF) override;
 
-  bool runOnModule(Module &M) override;
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<MachineModuleInfoWrapperPass>();
-    AU.setPreservesAll();
-  }
-
-  const SIFunctionResourceInfo &getResourceInfo(const Function *F) const {
-    auto Info = CallGraphResourceInfo.find(F);
-    assert(Info != CallGraphResourceInfo.end() &&
-           "Failed to find resource info for function");
-    return Info->getSecond();
+  const FunctionResourceInfo &getResourceInfo() const {
+    return ResourceInfo;
   }
 
 private:
-  SIFunctionResourceInfo analyzeResourceUsage(const MachineFunction &MF,
-                                              const TargetMachine &TM) const;
-  void propagateIndirectCallRegisterUsage();
-
-  DenseMap<const Function *, SIFunctionResourceInfo> CallGraphResourceInfo;
+  FunctionResourceInfo analyzeResourceUsage(const MachineFunction &MF) const;
+  FunctionResourceInfo ResourceInfo;
 };
 } // namespace llvm
 #endif // LLVM_LIB_TARGET_AMDGPU_AMDGPURESOURCEUSAGEANALYSIS_H

@@ -18,9 +18,9 @@
 #include "AMDGPUAsmPrinter.h"
 #include "AMDGPU.h"
 #include "AMDGPUHSAMetadataStreamer.h"
-#include "AMDGPUResourceUsageAnalysis.h"
 #include "AMDKernelCodeT.h"
 #include "GCNSubtarget.h"
+#include "MCTargetDesc/AMDGPUMCExpr.h"
 #include "MCTargetDesc/AMDGPUInstPrinter.h"
 #include "MCTargetDesc/AMDGPUTargetStreamer.h"
 #include "R600AsmPrinter.h"
@@ -87,7 +87,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUAsmPrinter() {
 
 AMDGPUAsmPrinter::AMDGPUAsmPrinter(TargetMachine &TM,
                                    std::unique_ptr<MCStreamer> Streamer)
-    : AsmPrinter(TM, std::move(Streamer)) {
+    : AsmPrinter(TM, std::move(Streamer)), MaxVGPR(0), MaxAGPR(0), MaxSGPR(0) {
   assert(OutStreamer && "AsmPrinter constructed without streamer");
 }
 
@@ -352,6 +352,19 @@ bool AMDGPUAsmPrinter::doFinalization(Module &M) {
     getTargetStreamer()->EmitCodeEnd(STI);
   }
 
+  // Assign expression to get the max register use to the max_num_Xgpr symbol.
+  MCSymbol *maxVGPRSym = OutContext.getOrCreateSymbol("max_num_vgpr");
+  MCSymbol *maxAGPRSym = OutContext.getOrCreateSymbol("max_num_agpr");
+  MCSymbol *maxSGPRSym = OutContext.getOrCreateSymbol("max_num_sgpr");
+
+  auto assignMaxRegSym = [this](MCSymbol *Sym, int32_t RegCount) {
+    const MCExpr *MaxExpr = MCConstantExpr::create(RegCount, OutContext);
+    Sym->setVariableValue(MaxExpr);
+  };
+  assignMaxRegSym(maxVGPRSym, MaxVGPR);
+  assignMaxRegSym(maxAGPRSym, MaxAGPR);
+  assignMaxRegSym(maxSGPRSym, MaxSGPR);
+
   return AsmPrinter::doFinalization(M);
 }
 
@@ -511,6 +524,12 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   emitResourceUsageRemarks(MF, CurrentProgramInfo, MFI->isModuleEntryFunction(),
                            STM.hasMAIInsts());
 
+  if (!MFI->isEntryFunction()) {
+    const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &Info =
+        ResourceUsage->getResourceInfo();
+    EmitResourceInfo(MF, Info);
+  }
+
   if (isVerbose()) {
     MCSectionELF *CommentSection =
         Context.getELFSection(".AMDGPU.csdata", ELF::SHT_PROGBITS, 0);
@@ -518,8 +537,8 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 
     if (!MFI->isEntryFunction()) {
       OutStreamer->emitRawComment(" Function info:", false);
-      const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
-          ResourceUsage->getResourceInfo(&MF.getFunction());
+      const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &Info =
+          ResourceUsage->getResourceInfo();
       emitCommonFunctionComments(
           Info.NumVGPR,
           STM.hasMAIInsts() ? Info.NumAGPR : std::optional<uint32_t>(),
@@ -680,8 +699,8 @@ uint64_t AMDGPUAsmPrinter::getFunctionCodeSize(const MachineFunction &MF) const 
 
 void AMDGPUAsmPrinter::getSIProgramInfo(SIProgramInfo &ProgInfo,
                                         const MachineFunction &MF) {
-  const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
-      ResourceUsage->getResourceInfo(&MF.getFunction());
+  const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &Info =
+      ResourceUsage->getResourceInfo();
   const GCNSubtarget &STM = MF.getSubtarget<GCNSubtarget>();
 
   ProgInfo.NumArchVGPR = Info.NumVGPR;
@@ -963,6 +982,88 @@ static unsigned getRsrcReg(CallingConv::ID CallConv) {
   case CallingConv::AMDGPU_VS: return R_00B128_SPI_SHADER_PGM_RSRC1_VS;
   case CallingConv::AMDGPU_PS: return R_00B028_SPI_SHADER_PGM_RSRC1_PS;
   }
+}
+
+static const AMDGPUMCExpr *
+generateResourceInfoExpr(const MachineFunction &MF,
+                         const SmallVectorImpl<const llvm::Function *> &Callees,
+                         int64_t localValue, StringRef Suffix,
+                         AMDGPUMCExpr::AMDGPUExprKind Kind, MCContext &Ctx) {
+  const MCConstantExpr *localConstExpr =
+      MCConstantExpr::create(localValue, Ctx);
+
+  std::vector<const MCExpr *> ArgExprs;
+  ArgExprs.push_back(localConstExpr);
+
+  for (const Function *Callee : Callees) {
+    assert(Callee->hasName());
+    MCSymbol *calleeValSym = Ctx.getOrCreateSymbol(Callee->getName() + Suffix);
+    ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, Ctx));
+  }
+  const AMDGPUMCExpr *transitiveExpr =
+      AMDGPUMCExpr::create(Kind, ArgExprs, Ctx);
+  MCSymbol *usesVccSym = Ctx.getOrCreateSymbol(MF.getName() + Suffix);
+  usesVccSym->setVariableValue(transitiveExpr);
+  return transitiveExpr;
+}
+
+void AMDGPUAsmPrinter::EmitResourceInfo(
+    const MachineFunction &MF,
+    const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI) {
+  OutStreamer->pushSection();
+  MCSectionELF *ResourceInfoSection =
+      OutContext.getELFSection(".AMDGPU.res_info", ELF::SHT_PROGBITS, 0);
+  OutStreamer->switchSection(ResourceInfoSection);
+
+  // Worst case VGPR use for non-hardware-entrypoints.
+  MCSymbol *maxVGPRSym = OutContext.getOrCreateSymbol("max_num_vgpr");
+  MCSymbol *maxAGPRSym = OutContext.getOrCreateSymbol("max_num_agpr");
+  MCSymbol *maxSGPRSym = OutContext.getOrCreateSymbol("max_num_sgpr");
+
+  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv()) &&
+      !FRI.HasIndirectCall) {
+    MaxVGPR = std::max(MaxVGPR, FRI.NumVGPR);
+    MaxAGPR = std::max(MaxAGPR, FRI.NumAGPR);
+    MaxSGPR = std::max(MaxSGPR, FRI.NumExplicitSGPR);
+  }
+
+  auto getMaxReg = [&](MCSymbol *Sym, int32_t numRegs,
+                       StringRef Suffix) -> const MCExpr * {
+    if (!FRI.HasIndirectCall)
+      return generateResourceInfoExpr(MF, FRI.Callees, numRegs, Suffix,
+                                      AMDGPUMCExpr::AGEK_ResInfoDirMax,
+                                      OutContext);
+    const MCExpr *SymRef = MCSymbolRefExpr::create(Sym, OutContext);
+    MCSymbol *usesVccSym = OutContext.getOrCreateSymbol(MF.getName() + Suffix);
+    usesVccSym->setVariableValue(SymRef);
+    return SymRef;
+  };
+
+  const MCExpr *NumVGPRExpr = getMaxReg(maxVGPRSym, FRI.NumVGPR, ".num_vgpr");
+  const MCExpr *NumAGPRExpr = getMaxReg(maxAGPRSym, FRI.NumAGPR, ".num_agpr");
+  const MCExpr *NumSGPRExpr =
+      getMaxReg(maxSGPRSym, FRI.NumExplicitSGPR, ".num_sgpr");
+
+  getTargetStreamer()->EmitResourceInfo(
+      NumVGPRExpr, NumAGPRExpr, NumSGPRExpr,
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.PrivateSegmentSize,
+                               ".private_seg_size",
+                               AMDGPUMCExpr::AGEK_ResInfoDirMax, OutContext),
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.UsesVCC, ".uses_vcc",
+                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.UsesFlatScratch,
+                               ".uses_flat_scratch",
+                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasDynamicallySizedStack,
+                               ".has_dyn_sized_stack",
+                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasRecursion,
+                               ".has_recursion",
+                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
+      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasIndirectCall,
+                               ".has_indirect_call",
+                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext));
+  OutStreamer->popSection();
 }
 
 void AMDGPUAsmPrinter::EmitProgramInfoSI(const MachineFunction &MF,

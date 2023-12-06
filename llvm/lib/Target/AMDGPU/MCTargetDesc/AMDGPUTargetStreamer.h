@@ -20,6 +20,7 @@ namespace llvm {
 class MCELFStreamer;
 class MCSymbol;
 class formatted_raw_ostream;
+class FunctionResourceInfo;
 
 namespace AMDGPU {
 namespace HSAMD {
@@ -61,6 +62,15 @@ public:
 
   virtual void emitAMDGPULDS(MCSymbol *Symbol, unsigned Size, Align Alignment) {
   }
+
+  virtual void EmitResourceInfo(const MCExpr *NumVGPR, const MCExpr *NumAGPR,
+                                const MCExpr *NumExplicitSGPR,
+                                const MCExpr *PrivateSegmentSize,
+                                const MCExpr *UsesVCC,
+                                const MCExpr *UsesFlatScratch,
+                                const MCExpr *HasDynamicallySizedStack,
+                                const MCExpr *HasRecursion,
+                                const MCExpr *HasIndirectCall){};
 
   /// \returns True on success, false on failure.
   virtual bool EmitISAVersion() { return true; }
@@ -147,6 +157,14 @@ public:
 
   void emitAMDGPULDS(MCSymbol *Sym, unsigned Size, Align Alignment) override;
 
+  void EmitResourceInfo(const MCExpr *NumVGPR, const MCExpr *NumAGPR,
+                        const MCExpr *NumExplicitSGPR,
+                        const MCExpr *PrivateSegmentSize, const MCExpr *UsesVCC,
+                        const MCExpr *UsesFlatScratch,
+                        const MCExpr *HasDynamicallySizedStack,
+                        const MCExpr *HasRecursion,
+                        const MCExpr *HasIndirectCall) override;
+
   /// \returns True on success, false on failure.
   bool EmitISAVersion() override;
 
@@ -210,6 +228,14 @@ public:
   void EmitAMDGPUSymbolType(StringRef SymbolName, unsigned Type) override;
 
   void emitAMDGPULDS(MCSymbol *Sym, unsigned Size, Align Alignment) override;
+
+  void EmitResourceInfo(const MCExpr *NumVGPR, const MCExpr *NumAGPR,
+                        const MCExpr *NumExplicitSGPR,
+                        const MCExpr *PrivateSegmentSize, const MCExpr *UsesVCC,
+                        const MCExpr *UsesFlatScratch,
+                        const MCExpr *HasDynamicallySizedStack,
+                        const MCExpr *HasRecursion,
+                        const MCExpr *HasIndirectCall) override;
 
   /// \returns True on success, false on failure.
   bool EmitISAVersion() override;
