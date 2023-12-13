@@ -15,6 +15,7 @@
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUASMPRINTER_H
 
 #include "AMDGPUResourceUsageAnalysis.h"
+#include "MCTargetDesc/AMDGPUMCExpr.h"
 #include "SIProgramInfo.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 
@@ -38,12 +39,117 @@ namespace amdhsa {
 struct kernel_descriptor_t;
 }
 
+namespace {
+class ResourceInfo {
+public:
+  enum ResourceInfoKind {
+    RIK_NumVGPR,
+    RIK_NumAGPR,
+    RIK_NumSGPR,
+    RIK_TotalNumVGPR,
+    RIK_TotalNumSGPR,
+    RIK_PrivateSegSize,
+    RIK_UsesVCC,
+    RIK_UsesFlatScratch,
+    RIK_HasDynSizedStack,
+    RIK_HasRecursion,
+    RIK_HasIndirectCall
+  };
+
+private:
+  int32_t MaxVGPR;
+  int32_t MaxAGPR;
+  int32_t MaxSGPR;
+
+  MCContext &OutContext;
+  bool finalized;
+
+  void assignResourceInfoExpr(int64_t localValue, ResourceInfoKind RIK,
+                              AMDGPUMCExpr::AMDGPUExprKind Kind,
+                              const MachineFunction &MF,
+                              const SmallVectorImpl<const Function *> &Callees);
+
+  int64_t getTotalNumVGPRs(StringRef FuncName, int64_t NumAGPR,
+                           int64_t NumVGPR);
+  int64_t getTotalNumSGPRs(StringRef FuncName, int64_t NumExplicitSGPR,
+                           bool UsesVCC, bool UsesFlatScr);
+
+  // Set members that require MF information that is unavailable at the time
+  // some symbols require resolving.
+  void Prepare(const MachineFunction &MF);
+
+  // These are derived from IsaInfo::getNumExtraSGPRs.
+  enum ExtraSGPRKind {
+    V8Min,
+    V8ToV10FeatureArchFlatScr,
+    V8ToV10XNACKUsed,
+    V8ToV10,
+    V10Plus
+  };
+
+  // Mappings required to compute the finalized total register usage.
+  StringMap<bool> has90AInsts;
+  StringMap<ExtraSGPRKind> ExtraSGPRType;
+
+  std::vector<StringRef> FunctionNames;
+  void emitComments(StringRef FuncName, raw_ostream &OS);
+
+  // Assigns expression for Max S/V/A-GPRs to the referenced symbols.
+  void assignMaxRegs();
+
+  // Assigns expressions for total S/V-GPR to the referenced symbols.
+  void assignTotalRegs();
+
+public:
+  ResourceInfo(MCContext &OutContext)
+      : MaxVGPR(0), MaxAGPR(0), MaxSGPR(0), OutContext(OutContext),
+        finalized(false) {}
+  void addMaxVGPRCandidate(int32_t candidate) {
+    MaxVGPR = std::max(MaxVGPR, candidate);
+  }
+  void addMaxAGPRCandidate(int32_t candidate) {
+    MaxAGPR = std::max(MaxAGPR, candidate);
+  }
+  void addMaxSGPRCandidate(int32_t candidate) {
+    MaxSGPR = std::max(MaxAGPR, candidate);
+  }
+
+  MCSymbol *getSymbol(StringRef FuncName, ResourceInfoKind RIK);
+
+  // Resolves the final symbols that requires the inter-function resource info
+  // to be resolved.
+  void Finalize();
+
+  MCSymbol *getMaxVGPRSymbol();
+  MCSymbol *getMaxAGPRSymbol();
+  MCSymbol *getMaxSGPRSymbol();
+
+  /// AMDGPUResourceUsageAnalysis gathers resource usage on a per-function
+  /// granularity. However, some resource info has to be assigned the call
+  /// transitive maximum or accumulative. For example, if A calls B and B's VGPR
+  /// usage exceeds A's, A should be assigned B's VGPR usage. Furthermore,
+  /// functions with indirect calls should be assigned the module level maximum.
+  void gatherResourceInfo(
+      const MachineFunction &MF,
+      const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI);
+
+  // Previously, the comments were emitted for every function, at every
+  // function. However, with the move to MCExprs it may not be a solvable
+  // expression at that time so if it is requested, the expr should be emitted
+  // at the end when everything should be solved (and if not, it's a bigger
+  // issue at hand).
+  void emitAllComments(raw_ostream &OS);
+};
+} // end anonymous namespace
+
 class AMDGPUAsmPrinter final : public AsmPrinter {
 private:
   unsigned CodeObjectVersion;
   void initializeTargetID(const Module &M);
 
   AMDGPUResourceUsageAnalysis *ResourceUsage;
+
+  std::unique_ptr<ResourceInfo> RI;
 
   SIProgramInfo CurrentProgramInfo;
 
@@ -110,16 +216,6 @@ public:
   bool emitPseudoExpansionLowering(MCStreamer &OutStreamer,
                                    const MachineInstr *MI);
 
-  /// Emit function resource information
-  ///
-  /// AMDGPUResourceUsageAnalysis gathers resource usage on a per-function
-  /// granularity. However, some resource info has to be assigned the call
-  /// transitive maximum or accumulative. For example, if A calls B and B's VGPR
-  /// usage exceeds A's, A should be assigned B's VGPR usage. Furthermore,
-  /// functions with indirect calls should be assigned the module level maximum.
-  void EmitResourceInfo(
-      const MachineFunction &MF,
-      const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI);
 
   /// Implemented in AMDGPUMCInstLower.cpp
   void emitInstruction(const MachineInstr *MI) override;

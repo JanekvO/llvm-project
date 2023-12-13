@@ -20,7 +20,6 @@
 #include "AMDGPUHSAMetadataStreamer.h"
 #include "AMDKernelCodeT.h"
 #include "GCNSubtarget.h"
-#include "MCTargetDesc/AMDGPUMCExpr.h"
 #include "MCTargetDesc/AMDGPUInstPrinter.h"
 #include "MCTargetDesc/AMDGPUTargetStreamer.h"
 #include "R600AsmPrinter.h"
@@ -89,6 +88,7 @@ AMDGPUAsmPrinter::AMDGPUAsmPrinter(TargetMachine &TM,
                                    std::unique_ptr<MCStreamer> Streamer)
     : AsmPrinter(TM, std::move(Streamer)), MaxVGPR(0), MaxAGPR(0), MaxSGPR(0) {
   assert(OutStreamer && "AsmPrinter constructed without streamer");
+  RI = std::make_unique<ResourceInfo>(OutContext);
 }
 
 StringRef AMDGPUAsmPrinter::getPassName() const {
@@ -352,19 +352,13 @@ bool AMDGPUAsmPrinter::doFinalization(Module &M) {
     getTargetStreamer()->EmitCodeEnd(STI);
   }
 
-  // Assign expression to get the max register use to the max_num_Xgpr symbol.
-  MCSymbol *maxVGPRSym = OutContext.getOrCreateSymbol("max_num_vgpr");
-  MCSymbol *maxAGPRSym = OutContext.getOrCreateSymbol("max_num_agpr");
-  MCSymbol *maxSGPRSym = OutContext.getOrCreateSymbol("max_num_sgpr");
-
-  auto assignMaxRegSym = [this](MCSymbol *Sym, int32_t RegCount) {
-    const MCExpr *MaxExpr = MCConstantExpr::create(RegCount, OutContext);
-    Sym->setVariableValue(MaxExpr);
-  };
-  assignMaxRegSym(maxVGPRSym, MaxVGPR);
-  assignMaxRegSym(maxAGPRSym, MaxAGPR);
-  assignMaxRegSym(maxSGPRSym, MaxSGPR);
-
+  // Assign expressions which can only be resolved when all other functions are
+  // known.
+  RI->Finalize();
+  if (isVerbose()) {
+    RI->emitAllComments(OutStreamer->getCommentOS());
+    OutStreamer->addBlankLine();
+  }
   return AsmPrinter::doFinalization(M);
 }
 
@@ -527,7 +521,7 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   if (!MFI->isEntryFunction()) {
     const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &Info =
         ResourceUsage->getResourceInfo();
-    EmitResourceInfo(MF, Info);
+    RI->gatherResourceInfo(MF, Info);
   }
 
   if (isVerbose()) {
@@ -984,88 +978,6 @@ static unsigned getRsrcReg(CallingConv::ID CallConv) {
   }
 }
 
-static const AMDGPUMCExpr *
-generateResourceInfoExpr(const MachineFunction &MF,
-                         const SmallVectorImpl<const llvm::Function *> &Callees,
-                         int64_t localValue, StringRef Suffix,
-                         AMDGPUMCExpr::AMDGPUExprKind Kind, MCContext &Ctx) {
-  const MCConstantExpr *localConstExpr =
-      MCConstantExpr::create(localValue, Ctx);
-
-  std::vector<const MCExpr *> ArgExprs;
-  ArgExprs.push_back(localConstExpr);
-
-  for (const Function *Callee : Callees) {
-    assert(Callee->hasName());
-    MCSymbol *calleeValSym = Ctx.getOrCreateSymbol(Callee->getName() + Suffix);
-    ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, Ctx));
-  }
-  const AMDGPUMCExpr *transitiveExpr =
-      AMDGPUMCExpr::create(Kind, ArgExprs, Ctx);
-  MCSymbol *usesVccSym = Ctx.getOrCreateSymbol(MF.getName() + Suffix);
-  usesVccSym->setVariableValue(transitiveExpr);
-  return transitiveExpr;
-}
-
-void AMDGPUAsmPrinter::EmitResourceInfo(
-    const MachineFunction &MF,
-    const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI) {
-  OutStreamer->pushSection();
-  MCSectionELF *ResourceInfoSection =
-      OutContext.getELFSection(".AMDGPU.res_info", ELF::SHT_PROGBITS, 0);
-  OutStreamer->switchSection(ResourceInfoSection);
-
-  // Worst case VGPR use for non-hardware-entrypoints.
-  MCSymbol *maxVGPRSym = OutContext.getOrCreateSymbol("max_num_vgpr");
-  MCSymbol *maxAGPRSym = OutContext.getOrCreateSymbol("max_num_agpr");
-  MCSymbol *maxSGPRSym = OutContext.getOrCreateSymbol("max_num_sgpr");
-
-  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv()) &&
-      !FRI.HasIndirectCall) {
-    MaxVGPR = std::max(MaxVGPR, FRI.NumVGPR);
-    MaxAGPR = std::max(MaxAGPR, FRI.NumAGPR);
-    MaxSGPR = std::max(MaxSGPR, FRI.NumExplicitSGPR);
-  }
-
-  auto getMaxReg = [&](MCSymbol *Sym, int32_t numRegs,
-                       StringRef Suffix) -> const MCExpr * {
-    if (!FRI.HasIndirectCall)
-      return generateResourceInfoExpr(MF, FRI.Callees, numRegs, Suffix,
-                                      AMDGPUMCExpr::AGEK_ResInfoDirMax,
-                                      OutContext);
-    const MCExpr *SymRef = MCSymbolRefExpr::create(Sym, OutContext);
-    MCSymbol *usesVccSym = OutContext.getOrCreateSymbol(MF.getName() + Suffix);
-    usesVccSym->setVariableValue(SymRef);
-    return SymRef;
-  };
-
-  const MCExpr *NumVGPRExpr = getMaxReg(maxVGPRSym, FRI.NumVGPR, ".num_vgpr");
-  const MCExpr *NumAGPRExpr = getMaxReg(maxAGPRSym, FRI.NumAGPR, ".num_agpr");
-  const MCExpr *NumSGPRExpr =
-      getMaxReg(maxSGPRSym, FRI.NumExplicitSGPR, ".num_sgpr");
-
-  getTargetStreamer()->EmitResourceInfo(
-      NumVGPRExpr, NumAGPRExpr, NumSGPRExpr,
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.PrivateSegmentSize,
-                               ".private_seg_size",
-                               AMDGPUMCExpr::AGEK_ResInfoDirMax, OutContext),
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.UsesVCC, ".uses_vcc",
-                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.UsesFlatScratch,
-                               ".uses_flat_scratch",
-                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasDynamicallySizedStack,
-                               ".has_dyn_sized_stack",
-                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasRecursion,
-                               ".has_recursion",
-                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext),
-      generateResourceInfoExpr(MF, FRI.Callees, FRI.HasIndirectCall,
-                               ".has_indirect_call",
-                               AMDGPUMCExpr::AGEK_ResInfoDirOr, OutContext));
-  OutStreamer->popSection();
-}
-
 void AMDGPUAsmPrinter::EmitProgramInfoSI(const MachineFunction &MF,
                                          const SIProgramInfo &CurrentProgramInfo) {
   const SIMachineFunctionInfo *MFI = MF.getInfo<SIMachineFunctionInfo>();
@@ -1409,4 +1321,272 @@ void AMDGPUAsmPrinter::emitResourceUsageRemarks(
   if (isModuleEntryFunction)
     EmitResourceUsageRemark("BytesLDS", "LDS Size [bytes/block]",
                             CurrentProgramInfo.LDSSize);
+}
+
+MCSymbol *ResourceInfo::getSymbol(StringRef FuncName, ResourceInfoKind RIK) {
+  switch (RIK) {
+  case RIK_NumVGPR:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".num_vgpr"));
+  case RIK_NumAGPR:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".num_agpr"));
+  case RIK_NumSGPR:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".num_sgpr"));
+  case RIK_TotalNumSGPR:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".total_num_sgpr"));
+  case RIK_TotalNumVGPR:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".total_num_vgpr"));
+  case RIK_PrivateSegSize:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".private_seg_size"));
+  case RIK_UsesVCC:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".uses_vcc"));
+  case RIK_UsesFlatScratch:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".uses_flat_scratch"));
+  case RIK_HasDynSizedStack:
+    return OutContext.getOrCreateSymbol(FuncName +
+                                        Twine(".has_dyn_sized_stack"));
+  case RIK_HasRecursion:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".has_recursion"));
+  case RIK_HasIndirectCall:
+    return OutContext.getOrCreateSymbol(FuncName + Twine(".has_indirect_call"));
+  }
+}
+
+void ResourceInfo::assignMaxRegs() {
+  // Assign expression to get the max register use to the max_num_Xgpr symbol.
+  MCSymbol *MaxVGPRSym = getMaxVGPRSymbol();
+  MCSymbol *MaxAGPRSym = getMaxAGPRSymbol();
+  MCSymbol *MaxSGPRSym = getMaxSGPRSymbol();
+
+  auto assignMaxRegSym = [this](MCSymbol *Sym, int32_t RegCount) {
+    const MCExpr *MaxExpr = MCConstantExpr::create(RegCount, OutContext);
+    Sym->setVariableValue(MaxExpr);
+  };
+
+  assignMaxRegSym(MaxVGPRSym, MaxVGPR);
+  assignMaxRegSym(MaxAGPRSym, MaxAGPR);
+  assignMaxRegSym(MaxSGPRSym, MaxSGPR);
+}
+
+void ResourceInfo::assignTotalRegs() {
+  for (StringRef FunctionName : FunctionNames) {
+    auto getSymbolRes = [this](StringRef FuncName,
+                               ResourceInfoKind RIK) -> int64_t {
+      int64_t Res;
+      MCSymbol *Sym = getSymbol(FuncName, RIK);
+      if (!Sym->getVariableValue()->evaluateAsAbsolute(Res)) {
+        OutContext.reportError(
+            {},
+            "Cannot evaluate MCExpr associated with symbol:" + Twine(FuncName));
+      }
+      return Res;
+    };
+
+    int64_t VCCUsedRes = getSymbolRes(FunctionName, RIK_UsesVCC);
+    int64_t FlatScrUsedRes = getSymbolRes(FunctionName, RIK_UsesFlatScratch);
+    int64_t NumVGPRRes = getSymbolRes(FunctionName, RIK_NumVGPR);
+    int64_t NumAGPRRes = getSymbolRes(FunctionName, RIK_NumAGPR);
+    int64_t NumSGPRRes = getSymbolRes(FunctionName, RIK_NumSGPR);
+
+    MCSymbol *TotalSGPRSymbol = getSymbol(FunctionName, RIK_TotalNumSGPR);
+    MCSymbol *TotalVGPRSymbol = getSymbol(FunctionName, RIK_TotalNumVGPR);
+
+    int64_t TotalSGPR =
+        getTotalNumSGPRs(FunctionName, NumSGPRRes, VCCUsedRes, FlatScrUsedRes);
+    int64_t TotalVGPR = getTotalNumVGPRs(FunctionName, NumAGPRRes, NumVGPRRes);
+
+    TotalSGPRSymbol->setVariableValue(
+        MCConstantExpr::create(TotalSGPR, OutContext));
+    TotalVGPRSymbol->setVariableValue(
+        MCConstantExpr::create(TotalVGPR, OutContext));
+  }
+}
+
+void ResourceInfo::Finalize() {
+  assert(!finalized && "Cannot finalize ResourceInfo again.");
+  finalized = true;
+  assignMaxRegs();
+  assignTotalRegs();
+}
+
+int64_t ResourceInfo::getTotalNumVGPRs(StringRef FuncName, int64_t NumAGPR,
+                                       int64_t NumVGPR) {
+  assert(has90AInsts.find(FuncName) != has90AInsts.end() &&
+         "Cannot find function for retrieval of total VGPR use.");
+  return AMDGPU::getTotalNumVGPRs(has90AInsts[FuncName], NumAGPR, NumVGPR);
+}
+
+int64_t ResourceInfo::getTotalNumSGPRs(StringRef FuncName,
+                                       int64_t NumExplicitSGPR, bool UsesVCC,
+                                       bool UsesFlatScr) {
+  assert(ExtraSGPRType.find(FuncName) != ExtraSGPRType.end() &&
+         "Cannot find function for retrieval of total SGPR use.");
+
+  ExtraSGPRKind ESK = ExtraSGPRType[FuncName];
+  switch (ESK) {
+  case V8ToV10FeatureArchFlatScr:
+    return NumExplicitSGPR + 6;
+  case V8ToV10XNACKUsed:
+    return NumExplicitSGPR + 4;
+  case V8Min: {
+    if (UsesFlatScr)
+      return NumExplicitSGPR + 4;
+    else if (UsesVCC)
+      return NumExplicitSGPR + 2;
+    else
+      return NumExplicitSGPR;
+  }
+  case V8ToV10: {
+    if (UsesFlatScr)
+      return NumExplicitSGPR + 6;
+    else if (UsesVCC)
+      return NumExplicitSGPR + 2;
+    else
+      return NumExplicitSGPR;
+  }
+  case V10Plus: {
+    if (UsesVCC)
+      return NumExplicitSGPR + 2;
+    else
+      return NumExplicitSGPR;
+  }
+  }
+}
+
+MCSymbol *ResourceInfo::getMaxVGPRSymbol() {
+  return OutContext.getOrCreateSymbol("max_num_vgpr");
+}
+MCSymbol *ResourceInfo::getMaxAGPRSymbol() {
+  return OutContext.getOrCreateSymbol("max_num_agpr");
+}
+MCSymbol *ResourceInfo::getMaxSGPRSymbol() {
+  return OutContext.getOrCreateSymbol("max_num_sgpr");
+}
+
+void ResourceInfo::assignResourceInfoExpr(
+    int64_t localValue, ResourceInfoKind RIK, AMDGPUMCExpr::AMDGPUExprKind Kind,
+    const MachineFunction &MF,
+    const SmallVectorImpl<const Function *> &Callees) {
+  const MCConstantExpr *localConstExpr =
+      MCConstantExpr::create(localValue, OutContext);
+
+  std::vector<const MCExpr *> ArgExprs;
+  ArgExprs.push_back(localConstExpr);
+
+  for (const Function *Callee : Callees) {
+    assert(Callee->hasName());
+    MCSymbol *calleeValSym = getSymbol(Callee->getName(), RIK);
+    ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, OutContext));
+  }
+  const AMDGPUMCExpr *transitiveExpr =
+      AMDGPUMCExpr::create(Kind, ArgExprs, OutContext);
+  MCSymbol *usesVccSym = getSymbol(MF.getName(), RIK);
+  usesVccSym->setVariableValue(transitiveExpr);
+}
+
+void ResourceInfo::Prepare(const MachineFunction &MF) {
+  const GCNSubtarget &ST = MF.getSubtarget<GCNSubtarget>();
+  StringRef Name = MF.getName();
+  ExtraSGPRKind ESK;
+  IsaVersion Version = getIsaVersion(ST.getCPU());
+  if (Version.Major < 8) {
+    ESK = V8Min;
+  } else if (8 <= Version.Major && Version.Major < 10) {
+    if (ST.getFeatureBits().test(AMDGPU::FeatureArchitectedFlatScratch))
+      ESK = V8ToV10FeatureArchFlatScr;
+    else if (ST.getTargetID().isXnackOnOrAny())
+      ESK = V8ToV10XNACKUsed;
+    else
+      ESK = V8ToV10;
+  } else {
+    ESK = V10Plus;
+  }
+
+  FunctionNames.push_back(Name);
+  has90AInsts.insert({Name, ST.hasGFX90AInsts()});
+  ExtraSGPRType.insert({Name, ESK});
+}
+
+void ResourceInfo::gatherResourceInfo(
+    const MachineFunction &MF,
+    const AMDGPUResourceUsageAnalysis::FunctionResourceInfo &FRI) {
+  Prepare(MF);
+
+  // Worst case VGPR use for non-hardware-entrypoints.
+  MCSymbol *maxVGPRSym = getMaxVGPRSymbol();
+  MCSymbol *maxAGPRSym = getMaxAGPRSymbol();
+  MCSymbol *maxSGPRSym = getMaxSGPRSymbol();
+
+  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv()) &&
+      !FRI.HasIndirectCall) {
+    addMaxVGPRCandidate(FRI.NumVGPR);
+    addMaxAGPRCandidate(FRI.NumAGPR);
+    addMaxSGPRCandidate(FRI.NumExplicitSGPR);
+  }
+
+  auto setMaxReg = [&](MCSymbol *MaxSym, int32_t numRegs,
+                       ResourceInfoKind RIK) {
+    if (!FRI.HasIndirectCall) {
+      assignResourceInfoExpr(numRegs, RIK, AMDGPUMCExpr::AGEK_ResInfoDirMax, MF,
+                             FRI.Callees);
+      return;
+    }
+    const MCExpr *SymRef = MCSymbolRefExpr::create(MaxSym, OutContext);
+    MCSymbol *LocalNumSym = getSymbol(MF.getName(), RIK);
+    LocalNumSym->setVariableValue(SymRef);
+  };
+
+  setMaxReg(maxVGPRSym, FRI.NumVGPR, RIK_NumVGPR);
+  setMaxReg(maxAGPRSym, FRI.NumAGPR, RIK_NumAGPR);
+  setMaxReg(maxSGPRSym, FRI.NumExplicitSGPR, RIK_NumSGPR);
+
+  assignResourceInfoExpr(FRI.PrivateSegmentSize,
+                         ResourceInfoKind::RIK_PrivateSegSize,
+                         AMDGPUMCExpr::AGEK_ResInfoDirMax, MF, FRI.Callees);
+  assignResourceInfoExpr(FRI.UsesVCC, ResourceInfoKind::RIK_UsesVCC,
+                         AMDGPUMCExpr::AGEK_ResInfoDirOr, MF, FRI.Callees);
+  assignResourceInfoExpr(FRI.UsesFlatScratch,
+                         ResourceInfoKind::RIK_UsesFlatScratch,
+                         AMDGPUMCExpr::AGEK_ResInfoDirOr, MF, FRI.Callees);
+  assignResourceInfoExpr(FRI.HasDynamicallySizedStack,
+                         ResourceInfoKind::RIK_HasDynSizedStack,
+                         AMDGPUMCExpr::AGEK_ResInfoDirOr, MF, FRI.Callees);
+  assignResourceInfoExpr(FRI.HasRecursion, ResourceInfoKind::RIK_HasRecursion,
+                         AMDGPUMCExpr::AGEK_ResInfoDirOr, MF, FRI.Callees);
+  assignResourceInfoExpr(FRI.HasIndirectCall,
+                         ResourceInfoKind::RIK_HasIndirectCall,
+                         AMDGPUMCExpr::AGEK_ResInfoDirOr, MF, FRI.Callees);
+}
+
+void ResourceInfo::emitComments(StringRef FuncName, raw_ostream &OS) {
+  auto printRIKRes = [&OS, FuncName, this](StringRef MsgPrefix,
+                                           ResourceInfoKind RIK) {
+    int64_t Res;
+    MCSymbol *Sym = getSymbol(FuncName, RIK);
+    if (!Sym->getVariableValue()->evaluateAsAbsolute(Res)) {
+      OS << MsgPrefix << "N/A\n";
+    }
+    OS << MsgPrefix << Res << '\n';
+  };
+
+  OS << "Function Name: " << FuncName << '\n';
+
+  printRIKRes("NumVgprs: ", RIK_NumVGPR);
+  printRIKRes("NumAgprs: ", RIK_NumAGPR);
+  printRIKRes("NumSgprs: ", RIK_NumSGPR);
+  printRIKRes("TotalNumVgprs: ", RIK_TotalNumVGPR);
+  printRIKRes("TotalNumSgprs: ", RIK_TotalNumSGPR);
+  printRIKRes("PrivateSegmentSize: ", RIK_PrivateSegSize);
+  printRIKRes("UsesVCC: ", RIK_UsesVCC);
+  printRIKRes("UsesFlatScratch: ", RIK_UsesFlatScratch);
+  printRIKRes("HasDynSizedStack: ", RIK_HasDynSizedStack);
+  printRIKRes("HasRecursion: ", RIK_HasRecursion);
+  printRIKRes("HasIndirectCall: ", RIK_HasIndirectCall);
+
+  OS << '\n';
+}
+
+void ResourceInfo::emitAllComments(raw_ostream &OS) {
+  for (StringRef FunctionName : FunctionNames) {
+    emitComments(FunctionName, OS);
+  }
 }
