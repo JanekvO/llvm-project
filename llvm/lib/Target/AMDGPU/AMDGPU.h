@@ -288,6 +288,9 @@ extern char &AMDGPUPrintfRuntimeBindingID;
 void initializeAMDGPUResourceUsageAnalysisPass(PassRegistry &);
 extern char &AMDGPUResourceUsageAnalysisID;
 
+void initializeAMDGPUFunctionResourceAnalysisPass(PassRegistry &);
+extern char &AMDGPUFunctionResourceAnalysisID;
+
 struct AMDGPUPrintfRuntimeBindingPass
     : PassInfoMixin<AMDGPUPrintfRuntimeBindingPass> {
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &AM);

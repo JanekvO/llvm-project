@@ -17,7 +17,9 @@
 
 #include "AMDGPUAsmPrinter.h"
 #include "AMDGPU.h"
+#include "AMDGPUFunctionResourceAnalysis.h"
 #include "AMDGPUHSAMetadataStreamer.h"
+#include "AMDGPUMCResourceInfo.h"
 #include "AMDGPUResourceUsageAnalysis.h"
 #include "AMDKernelCodeT.h"
 #include "GCNSubtarget.h"
@@ -89,6 +91,7 @@ AMDGPUAsmPrinter::AMDGPUAsmPrinter(TargetMachine &TM,
                                    std::unique_ptr<MCStreamer> Streamer)
     : AsmPrinter(TM, std::move(Streamer)) {
   assert(OutStreamer && "AsmPrinter constructed without streamer");
+  RI = std::make_unique<MCResourceInfo>(OutContext);
 }
 
 StringRef AMDGPUAsmPrinter::getPassName() const {
@@ -354,6 +357,11 @@ bool AMDGPUAsmPrinter::doFinalization(Module &M) {
     getTargetStreamer()->EmitCodeEnd(STI);
   }
 
+  // Assign expressions which can only be resolved when all other functions are
+  // known.
+  RI->Finalize();
+  getTargetStreamer()->EmitMCResourceMaximums(
+      RI->getMaxVGPRSymbol(), RI->getMaxAGPRSymbol(), RI->getMaxSGPRSymbol());
   return AsmPrinter::doFinalization(M);
 }
 
@@ -460,6 +468,7 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     initTargetStreamer(*MF.getFunction().getParent());
 
   ResourceUsage = &getAnalysis<AMDGPUResourceUsageAnalysis>();
+  FunctionResourceUsage = &getAnalysis<AMDGPUFunctionResourceAnalysis>();
   CurrentProgramInfo = SIProgramInfo();
 
   const AMDGPUMachineFunction *MFI = MF.getInfo<AMDGPUMachineFunction>();
@@ -512,6 +521,23 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 
   emitResourceUsageRemarks(MF, CurrentProgramInfo, MFI->isModuleEntryFunction(),
                            STM.hasMAIInsts());
+
+  {
+    const AMDGPUFunctionResourceAnalysis::FunctionResourceInfo &Info =
+        FunctionResourceUsage->getResourceInfo();
+    RI->gatherResourceInfo(MF, Info);
+    using RIK = MCResourceInfo::ResourceInfoKind;
+    getTargetStreamer()->EmitMCResourceInfo(
+        RI->getSymbol(MF.getName(), RIK::RIK_NumVGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_NumAGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_NumSGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_PrivateSegSize),
+        RI->getSymbol(MF.getName(), RIK::RIK_UsesVCC),
+        RI->getSymbol(MF.getName(), RIK::RIK_UsesFlatScratch),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasDynSizedStack),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasRecursion),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasIndirectCall));
+  }
 
   if (isVerbose()) {
     MCSectionELF *CommentSection =
@@ -1256,6 +1282,8 @@ bool AMDGPUAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
 void AMDGPUAsmPrinter::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.addRequired<AMDGPUResourceUsageAnalysis>();
   AU.addPreserved<AMDGPUResourceUsageAnalysis>();
+  AU.addRequired<AMDGPUFunctionResourceAnalysis>();
+  AU.addPreserved<AMDGPUFunctionResourceAnalysis>();
   AsmPrinter::getAnalysisUsage(AU);
 }
 

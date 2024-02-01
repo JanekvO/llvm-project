@@ -47,6 +47,7 @@ add_llvm_target(AMDGPUCodeGen
   AMDGPUAnnotateUniformValues.cpp
   AMDGPUArgumentUsageInfo.cpp
   AMDGPUAsmPrinter.cpp
+  AMDGPUAssumedStackOpt.cpp
   AMDGPUAtomicOptimizer.cpp
   AMDGPUAttributor.cpp
   AMDGPUCallLowering.cpp
@@ -55,6 +56,7 @@ add_llvm_target(AMDGPUCodeGen
   AMDGPUCtorDtorLowering.cpp
   AMDGPUExportClustering.cpp
   AMDGPUFrameLowering.cpp
+  AMDGPUFunctionResourceAnalysis.cpp
   AMDGPUGlobalISelDivergenceLowering.cpp
   AMDGPUGlobalISelUtils.cpp
   AMDGPUHSAMetadataStreamer.cpp
@@ -79,6 +81,7 @@ add_llvm_target(AMDGPUCodeGen
   AMDGPUMCInstLower.cpp
   AMDGPUIGroupLP.cpp
   AMDGPUInsertSingleUseVDST.cpp
+  AMDGPUMCResourceInfo.cpp
   AMDGPUMarkLastScratchLoad.cpp
   AMDGPUMIRFormatter.cpp
   AMDGPUOpenCLEnqueuedBlockLowering.cpp

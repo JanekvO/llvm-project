@@ -23,9 +23,11 @@ namespace llvm {
 
 class AMDGPUMachineFunction;
 struct AMDGPUResourceUsageAnalysis;
+class AMDGPUFunctionResourceAnalysis;
 class AMDGPUTargetStreamer;
 class MCCodeEmitter;
 class MCOperand;
+class MCResourceInfo;
 
 namespace AMDGPU {
 namespace HSAMD {
@@ -43,6 +45,10 @@ private:
   void initializeTargetID(const Module &M);
 
   AMDGPUResourceUsageAnalysis *ResourceUsage;
+
+  AMDGPUFunctionResourceAnalysis *FunctionResourceUsage;
+
+  std::unique_ptr<MCResourceInfo> RI;
 
   SIProgramInfo CurrentProgramInfo;
 
