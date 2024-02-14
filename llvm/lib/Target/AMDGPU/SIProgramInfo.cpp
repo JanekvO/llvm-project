@@ -18,11 +18,70 @@
 #include "GCNSubtarget.h"
 #include "SIDefines.h"
 #include "Utils/AMDGPUBaseInfo.h"
+#include "llvm/MC/MCExpr.h"
 
 using namespace llvm;
 
+void SIProgramInfo::reset(const MachineFunction &MF) {
+  MCContext &Ctx = MF.getContext();
+
+  const MCExpr *ZeroExpr = MCConstantExpr::create(0, Ctx);
+
+  VGPRBlocks = ZeroExpr;
+  SGPRBlocks = ZeroExpr;
+  Priority = 0;
+  FloatMode = 0;
+  Priv = 0;
+  DX10Clamp = 0;
+  DebugMode = 0;
+  IEEEMode = 0;
+  WgpMode = 0;
+  MemOrdered = 0;
+  RrWgMode = 0;
+  ScratchSize = ZeroExpr;
+
+  LDSBlocks = 0;
+  ScratchBlocks = ZeroExpr;
+
+  ScratchEnable = ZeroExpr;
+  UserSGPR = 0;
+  TrapHandlerEnable = 0;
+  TGIdXEnable = 0;
+  TGIdYEnable = 0;
+  TGIdZEnable = 0;
+  TGSizeEnable = 0;
+  TIdIGCompCount = 0;
+  EXCPEnMSB = 0;
+  LdsSize = 0;
+  EXCPEnable = 0;
+
+  ComputePGMRSrc3GFX90A = 0;
+
+  NumVGPR = ZeroExpr;
+  NumArchVGPR = ZeroExpr;
+  NumAccVGPR = ZeroExpr;
+  AccumOffset = ZeroExpr;
+  TgSplit = 0;
+  NumSGPR = ZeroExpr;
+  SGPRSpill = 0;
+  VGPRSpill = 0;
+  LDSSize = 0;
+  FlatUsed = ZeroExpr;
+
+  NumSGPRsForWavesPerEU = ZeroExpr;
+  NumVGPRsForWavesPerEU = ZeroExpr;
+  Occupancy = ZeroExpr;
+  DynamicCallStack = ZeroExpr;
+  VCCUsed = ZeroExpr;
+}
+
 uint64_t SIProgramInfo::getComputePGMRSrc1(const GCNSubtarget &ST) const {
-  uint64_t Reg = S_00B848_VGPRS(VGPRBlocks) | S_00B848_SGPRS(SGPRBlocks) |
+  int64_t VBlocks, SBlocks;
+  VGPRBlocks->evaluateAsAbsolute(VBlocks);
+  SGPRBlocks->evaluateAsAbsolute(SBlocks);
+
+  uint64_t Reg = S_00B848_VGPRS(static_cast<uint64_t>(VBlocks)) |
+                 S_00B848_SGPRS(static_cast<uint64_t>(SBlocks)) |
                  S_00B848_PRIORITY(Priority) | S_00B848_FLOAT_MODE(FloatMode) |
                  S_00B848_PRIV(Priv) | S_00B848_DEBUG_MODE(DebugMode) |
                  S_00B848_WGP_MODE(WgpMode) | S_00B848_MEM_ORDERED(MemOrdered);
@@ -44,7 +103,12 @@ uint64_t SIProgramInfo::getPGMRSrc1(CallingConv::ID CC,
   if (AMDGPU::isCompute(CC)) {
     return getComputePGMRSrc1(ST);
   }
-  uint64_t Reg = S_00B848_VGPRS(VGPRBlocks) | S_00B848_SGPRS(SGPRBlocks) |
+  int64_t VBlocks, SBlocks;
+  VGPRBlocks->evaluateAsAbsolute(VBlocks);
+  SGPRBlocks->evaluateAsAbsolute(SBlocks);
+
+  uint64_t Reg = S_00B848_VGPRS(static_cast<uint64_t>(VBlocks)) |
+                 S_00B848_SGPRS(static_cast<uint64_t>(SBlocks)) |
                  S_00B848_PRIORITY(Priority) | S_00B848_FLOAT_MODE(FloatMode) |
                  S_00B848_PRIV(Priv) | S_00B848_DEBUG_MODE(DebugMode);
 
@@ -77,8 +141,10 @@ uint64_t SIProgramInfo::getPGMRSrc1(CallingConv::ID CC,
 }
 
 uint64_t SIProgramInfo::getComputePGMRSrc2() const {
+  int64_t ScratchEn;
+  ScratchEnable->evaluateAsAbsolute(ScratchEn);
   uint64_t Reg =
-      S_00B84C_SCRATCH_EN(ScratchEnable) | S_00B84C_USER_SGPR(UserSGPR) |
+      S_00B84C_SCRATCH_EN(ScratchEn) | S_00B84C_USER_SGPR(UserSGPR) |
       S_00B84C_TRAP_HANDLER(TrapHandlerEnable) |
       S_00B84C_TGID_X_EN(TGIdXEnable) | S_00B84C_TGID_Y_EN(TGIdYEnable) |
       S_00B84C_TGID_Z_EN(TGIdZEnable) | S_00B84C_TG_SIZE_EN(TGSizeEnable) |
