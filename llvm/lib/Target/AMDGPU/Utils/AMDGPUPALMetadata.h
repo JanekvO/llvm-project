@@ -13,7 +13,10 @@
 
 #ifndef LLVM_LIB_TARGET_AMDGPU_AMDGPUPALMETADATA_H
 #define LLVM_LIB_TARGET_AMDGPU_AMDGPUPALMETADATA_H
+#include "AMDGPUDelayedMCExpr.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/BinaryFormat/MsgPackDocument.h"
+#include "llvm/MC/MCContext.h"
 
 namespace llvm {
 
@@ -21,6 +24,10 @@ class Module;
 class StringRef;
 
 class AMDGPUPALMetadata {
+public:
+  using RegisterExprMap = DenseMap<unsigned, const MCExpr *>;
+
+private:
   unsigned BlobType = 0;
   msgpack::Document MsgPackDoc;
   msgpack::DocNode Registers;
@@ -31,6 +38,9 @@ class AMDGPUPALMetadata {
   // From PAL version >= 3.0
   msgpack::DocNode ComputeRegisters;
   msgpack::DocNode GraphicsRegisters;
+
+  DelayedMCExpr DelayedExprs;
+  RegisterExprMap REM;
 
 public:
   // Read the amdgpu.pal.metadata supplied by the frontend, ready for
@@ -64,6 +74,7 @@ public:
   // Set a register in the metadata.
   // In fact this ORs the value into any previous setting of the register.
   void setRegister(unsigned Reg, unsigned Val);
+  void setRegister(unsigned Reg, const MCExpr *Val, MCContext &Ctx);
 
   // Set the entry point name for one shader.
   void setEntryPoint(unsigned CC, StringRef Name);
@@ -72,6 +83,7 @@ public:
   // record for logging etc; wave dispatch actually uses the rsrc1 register for
   // the shader stage to determine the number of vgprs to allocate.
   void setNumUsedVgprs(unsigned CC, unsigned Val);
+  void setNumUsedVgprs(unsigned CC, const MCExpr *Val, MCContext &Ctx);
 
   // Set the number of used agprs in the metadata. This is an optional advisory
   // record for logging etc;
@@ -97,6 +109,7 @@ public:
   // record for logging etc; wave dispatch actually uses the rsrc1 register for
   // the shader stage to determine the number of vgprs to allocate.
   void setFunctionNumUsedVgprs(StringRef FnName, unsigned Val);
+  void setFunctionNumUsedVgprs(StringRef FnName, const MCExpr *Val);
 
   // Set the number of used sgprs in the metadata. This is an optional advisory
   // record for logging etc; wave dispatch actually uses the rsrc1 register for
@@ -138,6 +151,8 @@ public:
 
   void setHwStage(unsigned CC, StringRef field, unsigned Val);
   void setHwStage(unsigned CC, StringRef field, bool Val);
+  void setHwStage(unsigned CC, StringRef field, msgpack::Type Type,
+                  const MCExpr *Val);
 
   void setComputeRegisters(StringRef field, unsigned Val);
   void setComputeRegisters(StringRef field, bool Val);

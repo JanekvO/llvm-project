@@ -1200,8 +1200,8 @@ void AMDGPUAsmPrinter::EmitPALMetadata(const MachineFunction &MF,
   auto MD = getTargetStreamer()->getPALMetadata();
 
   MD->setEntryPoint(CC, MF.getFunction().getName());
-  MD->setNumUsedVgprs(CC,
-                      getMCExprValue(CurrentProgramInfo.NumVGPRsForWavesPerEU));
+  MD->setNumUsedVgprs(CC, CurrentProgramInfo.NumVGPRsForWavesPerEU,
+                      MF.getContext());
 
   // Only set AGPRs for supported devices
   const GCNSubtarget &STM = MF.getSubtarget<GCNSubtarget>();
@@ -1221,8 +1221,8 @@ void AMDGPUAsmPrinter::EmitPALMetadata(const MachineFunction &MF,
     }
   } else {
     MD->setHwStage(CC, ".debug_mode", (bool)CurrentProgramInfo.DebugMode);
-    MD->setHwStage(CC, ".scratch_en",
-                   (bool)getMCExprValue(CurrentProgramInfo.ScratchEnable));
+    MD->setHwStage(CC, ".scratch_en", msgpack::Type::Boolean,
+                   CurrentProgramInfo.ScratchEnable);
     EmitPALMetadataCommon(MD, CurrentProgramInfo, CC, STM);
   }
 
@@ -1290,8 +1290,7 @@ void AMDGPUAsmPrinter::emitPALFunctionMetadata(const MachineFunction &MF) {
 
   // Set optional info
   MD->setFunctionLdsSize(FnName, CurrentProgramInfo.LDSSize);
-  MD->setFunctionNumUsedVgprs(
-      FnName, getMCExprValue(CurrentProgramInfo.NumVGPRsForWavesPerEU));
+  MD->setFunctionNumUsedVgprs(FnName, CurrentProgramInfo.NumVGPRsForWavesPerEU);
   MD->setFunctionNumUsedSgprs(
       FnName, getMCExprValue(CurrentProgramInfo.NumSGPRsForWavesPerEU));
 }

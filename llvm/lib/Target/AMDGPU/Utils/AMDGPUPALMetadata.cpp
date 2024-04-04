@@ -20,6 +20,7 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Module.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/Support/AMDGPUMetadata.h"
 #include "llvm/Support/EndianStream.h"
 
@@ -182,6 +183,26 @@ void AMDGPUPALMetadata::setRegister(unsigned Reg, unsigned Val) {
   N = N.getDocument()->getNode(Val);
 }
 
+// Set a register in the metadata.
+// In fact this ORs the value into any previous setting of the register.
+void AMDGPUPALMetadata::setRegister(unsigned Reg, const MCExpr *Val,
+                                    MCContext &Ctx) {
+  if (!isLegacy()) {
+    // In the new MsgPack format, ignore register numbered >= 0x10000000. It
+    // is a PAL ABI pseudo-register in the old non-MsgPack format.
+    if (Reg >= 0x10000000)
+      return;
+  }
+  auto &N = getRegisters()[MsgPackDoc.getNode(Reg)];
+  const MCExpr *Expr = Val;
+  if (REM.find(Reg) != REM.end()) {
+    Expr = MCBinaryExpr::createOr(Val, REM[Reg], Ctx);
+    REM[Reg] = Expr;
+  }
+
+  DelayedExprs.AssignDocNode(N, msgpack::Type::UInt, Expr);
+}
+
 // Set the entry point name for one shader.
 void AMDGPUPALMetadata::setEntryPoint(unsigned CC, StringRef Name) {
   if (isLegacy())
@@ -205,6 +226,20 @@ void AMDGPUPALMetadata::setNumUsedVgprs(CallingConv::ID CC, unsigned Val) {
   }
   // Msgpack format.
   getHwStage(CC)[".vgpr_count"] = MsgPackDoc.getNode(Val);
+}
+
+void AMDGPUPALMetadata::setNumUsedVgprs(CallingConv::ID CC, const MCExpr *Val,
+                                        MCContext &Ctx) {
+  if (isLegacy()) {
+    // Old non-msgpack format.
+    unsigned NumUsedVgprsKey = getScratchSizeKey(CC) +
+                               PALMD::Key::VS_NUM_USED_VGPRS -
+                               PALMD::Key::VS_SCRATCH_SIZE;
+    setRegister(NumUsedVgprsKey, Val, Ctx);
+    return;
+  }
+  // Msgpack format.
+  setHwStage(CC, ".vgpr_count", msgpack::Type::UInt, Val);
 }
 
 // Set the number of used agprs in the metadata.
@@ -257,6 +292,12 @@ void AMDGPUPALMetadata::setFunctionNumUsedVgprs(StringRef FnName,
                                                 unsigned Val) {
   auto Node = getShaderFunction(FnName);
   Node[".vgpr_count"] = MsgPackDoc.getNode(Val);
+}
+
+void AMDGPUPALMetadata::setFunctionNumUsedVgprs(StringRef FnName,
+                                                const MCExpr *Val) {
+  auto Node = getShaderFunction(FnName);
+  DelayedExprs.AssignDocNode(Node[".vgpr_count"], msgpack::Type::UInt, Val);
 }
 
 // Set the number of used vgprs in the metadata.
@@ -662,6 +703,7 @@ void AMDGPUPALMetadata::toString(std::string &String) {
   String.clear();
   if (!BlobType)
     return;
+  DelayedExprs.ResolveDelayedExpressions();
   raw_string_ostream Stream(String);
   if (isLegacy()) {
     if (MsgPackDoc.getRoot().getKind() == msgpack::Type::Nil)
@@ -711,6 +753,7 @@ void AMDGPUPALMetadata::toString(std::string &String) {
 // a .note record of the specified AMD type. Returns an empty blob if
 // there is no PAL metadata,
 void AMDGPUPALMetadata::toBlob(unsigned Type, std::string &Blob) {
+  DelayedExprs.ResolveDelayedExpressions();
   if (Type == ELF::NT_AMD_PAL_METADATA)
     toLegacyBlob(Blob);
   else if (Type)
@@ -940,6 +983,11 @@ void AMDGPUPALMetadata::setHwStage(unsigned CC, StringRef field, unsigned Val) {
 
 void AMDGPUPALMetadata::setHwStage(unsigned CC, StringRef field, bool Val) {
   getHwStage(CC)[field] = Val;
+}
+
+void AMDGPUPALMetadata::setHwStage(unsigned CC, StringRef field,
+                                   msgpack::Type Type, const MCExpr *Val) {
+  DelayedExprs.AssignDocNode(getHwStage(CC)[field], Type, Val);
 }
 
 void AMDGPUPALMetadata::setComputeRegisters(StringRef field, unsigned Val) {
