@@ -244,7 +244,7 @@ void AMDGPUAsmPrinter::emitFunctionBodyEnd() {
   getNameWithPrefix(KernelName, &MF->getFunction());
   getTargetStreamer()->EmitAmdhsaKernelDescriptor(
       STM, KernelName, getAmdhsaKernelDescriptor(*MF, CurrentProgramInfo),
-      getMCExprValue(CurrentProgramInfo.NumVGPRsForWavesPerEU),
+      CurrentProgramInfo.NumVGPRsForWavesPerEU,
       getMCExprValue(CurrentProgramInfo.NumSGPRsForWavesPerEU) -
           IsaInfo::getNumExtraSGPRs(
               &STM, getMCExprValue(CurrentProgramInfo.VCCUsed),

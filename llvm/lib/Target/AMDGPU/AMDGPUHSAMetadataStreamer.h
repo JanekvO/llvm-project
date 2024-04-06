@@ -15,6 +15,7 @@
 #ifndef LLVM_LIB_TARGET_AMDGPU_MCTARGETDESC_AMDGPUHSAMETADATASTREAMER_H
 #define LLVM_LIB_TARGET_AMDGPU_MCTARGETDESC_AMDGPUHSAMETADATASTREAMER_H
 
+#include "AMDGPUDelayedMCExpr.h"
 #include "llvm/BinaryFormat/MsgPackDocument.h"
 #include "llvm/Support/AMDGPUMetadata.h"
 #include "llvm/Support/Alignment.h"
@@ -63,6 +64,9 @@ protected:
 
 class MetadataStreamerMsgPackV4 : public MetadataStreamer {
 protected:
+  std::unique_ptr<DelayedMCExpr> DelayedExprs =
+      std::make_unique<DelayedMCExpr>();
+
   std::unique_ptr<msgpack::Document> HSAMetadataDoc =
       std::make_unique<msgpack::Document>();
 

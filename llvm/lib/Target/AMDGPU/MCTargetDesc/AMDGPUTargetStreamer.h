@@ -95,7 +95,7 @@ public:
   virtual void
   EmitAmdhsaKernelDescriptor(const MCSubtargetInfo &STI, StringRef KernelName,
                              const AMDGPU::MCKernelDescriptor &KernelDescriptor,
-                             uint64_t NextVGPR, uint64_t NextSGPR,
+                             const MCExpr *NextVGPR, uint64_t NextSGPR,
                              bool ReserveVCC, bool ReserveFlatScr) {}
 
   static StringRef getArchNameFromElfMach(unsigned ElfMach);
@@ -152,7 +152,7 @@ public:
   void
   EmitAmdhsaKernelDescriptor(const MCSubtargetInfo &STI, StringRef KernelName,
                              const AMDGPU::MCKernelDescriptor &KernelDescriptor,
-                             uint64_t NextVGPR, uint64_t NextSGPR,
+                             const MCExpr *NextVGPR, uint64_t NextSGPR,
                              bool ReserveVCC, bool ReserveFlatScr) override;
 };
 
@@ -208,7 +208,7 @@ public:
   void
   EmitAmdhsaKernelDescriptor(const MCSubtargetInfo &STI, StringRef KernelName,
                              const AMDGPU::MCKernelDescriptor &KernelDescriptor,
-                             uint64_t NextVGPR, uint64_t NextSGPR,
+                             const MCExpr *NextVGPR, uint64_t NextSGPR,
                              bool ReserveVCC, bool ReserveFlatScr) override;
 };
 }

@@ -493,8 +493,8 @@ MetadataStreamerMsgPackV4::getHSAKernelProps(const MachineFunction &MF,
       Kern.getDocument()->getNode(STM.getWavefrontSize());
   Kern[".sgpr_count"] =
       Kern.getDocument()->getNode(getMCExprValue(ProgramInfo.NumSGPR));
-  Kern[".vgpr_count"] =
-      Kern.getDocument()->getNode(getMCExprValue(ProgramInfo.NumVGPR));
+  DelayedExprs->AssignDocNode(Kern[".vgpr_count"], msgpack::Type::UInt,
+                              ProgramInfo.NumVGPR);
 
   // Only add AGPR count to metadata for supported devices
   if (STM.hasMAIInsts()) {
@@ -521,6 +521,7 @@ MetadataStreamerMsgPackV4::getHSAKernelProps(const MachineFunction &MF,
 }
 
 bool MetadataStreamerMsgPackV4::emitTo(AMDGPUTargetStreamer &TargetStreamer) {
+  DelayedExprs->ResolveDelayedExpressions();
   return TargetStreamer.EmitHSAMetadata(*HSAMetadataDoc, true);
 }
 
@@ -533,6 +534,7 @@ void MetadataStreamerMsgPackV4::begin(const Module &Mod,
 }
 
 void MetadataStreamerMsgPackV4::end() {
+  DelayedExprs->ResolveDelayedExpressions();
   std::string HSAMetadataString;
   raw_string_ostream StrOS(HSAMetadataString);
   HSAMetadataDoc->toYAML(StrOS);

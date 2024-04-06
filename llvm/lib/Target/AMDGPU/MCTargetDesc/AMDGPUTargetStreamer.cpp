@@ -308,7 +308,7 @@ bool AMDGPUTargetAsmStreamer::EmitCodeEnd(const MCSubtargetInfo &STI) {
 
 void AMDGPUTargetAsmStreamer::EmitAmdhsaKernelDescriptor(
     const MCSubtargetInfo &STI, StringRef KernelName,
-    const MCKernelDescriptor &KD, uint64_t NextVGPR, uint64_t NextSGPR,
+    const MCKernelDescriptor &KD, const MCExpr *NextVGPR, uint64_t NextSGPR,
     bool ReserveVCC, bool ReserveFlatScr) {
   IsaVersion IVersion = getIsaVersion(STI.getCPU());
   const MCAsmInfo *MAI = getContext().getAsmInfo();
@@ -422,7 +422,10 @@ void AMDGPUTargetAsmStreamer::EmitAmdhsaKernelDescriptor(
              ".amdhsa_system_vgpr_workitem_id");
 
   // These directives are required.
-  OS << "\t\t.amdhsa_next_free_vgpr " << NextVGPR << '\n';
+  OS << "\t\t.amdhsa_next_free_vgpr ";
+  NextVGPR->print(OS, MAI);
+  OS << '\n';
+
   OS << "\t\t.amdhsa_next_free_sgpr " << NextSGPR << '\n';
 
   if (AMDGPU::isGFX90A(STI)) {
@@ -915,7 +918,7 @@ bool AMDGPUTargetELFStreamer::EmitCodeEnd(const MCSubtargetInfo &STI) {
 
 void AMDGPUTargetELFStreamer::EmitAmdhsaKernelDescriptor(
     const MCSubtargetInfo &STI, StringRef KernelName,
-    const MCKernelDescriptor &KernelDescriptor, uint64_t NextVGPR,
+    const MCKernelDescriptor &KernelDescriptor, const MCExpr *NextVGPR,
     uint64_t NextSGPR, bool ReserveVCC, bool ReserveFlatScr) {
   auto &Streamer = getStreamer();
   auto &Context = Streamer.getContext();

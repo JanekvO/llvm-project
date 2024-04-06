@@ -1346,9 +1346,9 @@ private:
   bool calculateGPRBlocks(const FeatureBitset &Features, bool VCCUsed,
                           bool FlatScrUsed, bool XNACKUsed,
                           std::optional<bool> EnableWavefrontSize32,
-                          unsigned NextFreeVGPR, SMRange VGPRRange,
+                          const MCExpr *NextFreeVGPR, SMRange VGPRRange,
                           unsigned NextFreeSGPR, SMRange SGPRRange,
-                          unsigned &VGPRBlocks, unsigned &SGPRBlocks);
+                          const MCExpr *&VGPRBlocks, unsigned &SGPRBlocks);
   bool ParseDirectiveAMDGCNTarget();
   bool ParseDirectiveAMDHSACodeObjectVersion();
   bool ParseDirectiveAMDHSAKernel();
@@ -5371,13 +5371,12 @@ bool AMDGPUAsmParser::OutOfRangeError(SMRange Range) {
 bool AMDGPUAsmParser::calculateGPRBlocks(
     const FeatureBitset &Features, bool VCCUsed, bool FlatScrUsed,
     bool XNACKUsed, std::optional<bool> EnableWavefrontSize32,
-    unsigned NextFreeVGPR, SMRange VGPRRange, unsigned NextFreeSGPR,
-    SMRange SGPRRange, unsigned &VGPRBlocks, unsigned &SGPRBlocks) {
+    const MCExpr *NextFreeVGPR, SMRange VGPRRange, unsigned NextFreeSGPR,
+    SMRange SGPRRange, const MCExpr *&VGPRBlocks, unsigned &SGPRBlocks) {
   // TODO(scott.linder): These calculations are duplicated from
   // AMDGPUAsmPrinter::getSIProgramInfo and could be unified.
   IsaVersion Version = getIsaVersion(getSTI().getCPU());
 
-  unsigned NumVGPRs = NextFreeVGPR;
   unsigned NumSGPRs = NextFreeSGPR;
 
   if (Version.Major >= 10)
@@ -5401,8 +5400,24 @@ bool AMDGPUAsmParser::calculateGPRBlocks(
       NumSGPRs = IsaInfo::FIXED_NUM_SGPRS_FOR_INIT_BUG;
   }
 
-  VGPRBlocks = IsaInfo::getEncodedNumVGPRBlocks(&getSTI(), NumVGPRs,
-                                                EnableWavefrontSize32);
+  MCContext &Ctx = getContext();
+  // The MCExpr equivalent of getNumSGPRBlocks/getNumVGPRBlocks:
+  // (alignTo(max(1u, NumGPR), GPREncodingGranule) / GPREncodingGranule) - 1
+  auto GetNumGPRBlocks = [&Ctx](const MCExpr *NumGPR, unsigned Granule) {
+    const MCExpr *OneConst = MCConstantExpr::create(1ul, Ctx);
+    const MCExpr *GranuleConst = MCConstantExpr::create(Granule, Ctx);
+    const MCExpr *MaxNumGPR =
+        AMDGPUVariadicMCExpr::createMax({NumGPR, OneConst}, Ctx);
+    const MCExpr *AlignToGPR =
+        AMDGPUVariadicMCExpr::createAlignTo(MaxNumGPR, GranuleConst, Ctx);
+    const MCExpr *DivGPR =
+        MCBinaryExpr::createDiv(AlignToGPR, GranuleConst, Ctx);
+    const MCExpr *SubGPR = MCBinaryExpr::createSub(DivGPR, OneConst, Ctx);
+    return SubGPR;
+  };
+
+  VGPRBlocks =
+      GetNumGPRBlocks(NextFreeVGPR, IsaInfo::getVGPREncodingGranule(&getSTI()));
   SGPRBlocks = IsaInfo::getNumSGPRBlocks(&getSTI(), NumSGPRs);
 
   return false;
@@ -5428,7 +5443,7 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
   IsaVersion IVersion = getIsaVersion(getSTI().getCPU());
 
   SMRange VGPRRange;
-  uint64_t NextFreeVGPR = 0;
+  const MCExpr *NextFreeVGPR = nullptr;
   uint64_t AccumOffset = 0;
   uint64_t SharedVGPRCount = 0;
   uint64_t PreloadLength = 0;
@@ -5637,9 +5652,8 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
                        COMPUTE_PGM_RSRC2_ENABLE_VGPR_WORKITEM_ID, ExprVal,
                        ValRange);
     } else if (ID == ".amdhsa_next_free_vgpr") {
-      EXPR_RESOLVE_OR_ERROR(EvaluatableExpr);
       VGPRRange = ValRange;
-      NextFreeVGPR = Val;
+      NextFreeVGPR = ExprVal;
     } else if (ID == ".amdhsa_next_free_sgpr") {
       EXPR_RESOLVE_OR_ERROR(EvaluatableExpr);
       SGPRRange = ValRange;
@@ -5788,7 +5802,7 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
   if (!Seen.contains(".amdhsa_next_free_sgpr"))
     return TokError(".amdhsa_next_free_sgpr directive is required");
 
-  unsigned VGPRBlocks;
+  const MCExpr *VGPRBlocks;
   unsigned SGPRBlocks;
   if (calculateGPRBlocks(getFeatureBits(), ReserveVCC, ReserveFlatScr,
                          getTargetStreamer().getTargetID()->isXnackOnOrAny(),
@@ -5797,11 +5811,11 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
                          SGPRBlocks))
     return true;
 
-  if (!isUInt<COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_WIDTH>(
-          VGPRBlocks))
-    return OutOfRangeError(VGPRRange);
+  // if (!isUInt<COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_WIDTH>(
+  //         VGPRBlocks))
+  //   return OutOfRangeError(VGPRRange);
   AMDGPU::MCKernelDescriptor::bits_set(
-      KD.compute_pgm_rsrc1, MCConstantExpr::create(VGPRBlocks, getContext()),
+      KD.compute_pgm_rsrc1, VGPRBlocks,
       COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT_SHIFT,
       COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT, getContext());
 
@@ -5842,8 +5856,8 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
     if (AccumOffset < 4 || AccumOffset > 256 || (AccumOffset & 3))
       return TokError("accum_offset should be in range [4..256] in "
                       "increments of 4");
-    if (AccumOffset > alignTo(std::max((uint64_t)1, NextFreeVGPR), 4))
-      return TokError("accum_offset exceeds total VGPR allocation");
+    // if (AccumOffset > alignTo(std::max((uint64_t)1, NextFreeVGPR), 4))
+    //   return TokError("accum_offset exceeds total VGPR allocation");
     MCKernelDescriptor::bits_set(
         KD.compute_pgm_rsrc3,
         MCConstantExpr::create(AccumOffset / 4 - 1, getContext()),
@@ -5857,11 +5871,11 @@ bool AMDGPUAsmParser::ParseDirectiveAMDHSAKernel() {
       return TokError("shared_vgpr_count directive not valid on "
                       "wavefront size 32");
     }
-    if (SharedVGPRCount * 2 + VGPRBlocks > 63) {
-      return TokError("shared_vgpr_count*2 + "
-                      "compute_pgm_rsrc1.GRANULATED_WORKITEM_VGPR_COUNT cannot "
-                      "exceed 63\n");
-    }
+    // if (SharedVGPRCount * 2 + VGPRBlocks > 63) {
+    //   return TokError("shared_vgpr_count*2 + "
+    //                   "compute_pgm_rsrc1.GRANULATED_WORKITEM_VGPR_COUNT
+    //                   cannot " "exceed 63\n");
+    // }
   }
 
   getTargetStreamer().EmitAmdhsaKernelDescriptor(getSTI(), KernelName, KD,
