@@ -18,6 +18,7 @@
 #include "AMDGPUAsmPrinter.h"
 #include "AMDGPU.h"
 #include "AMDGPUHSAMetadataStreamer.h"
+#include "AMDGPUMCResourceInfo.h"
 #include "AMDGPUResourceUsageAnalysis.h"
 #include "AMDKernelCodeT.h"
 #include "GCNSubtarget.h"
@@ -91,6 +92,7 @@ AMDGPUAsmPrinter::AMDGPUAsmPrinter(TargetMachine &TM,
                                    std::unique_ptr<MCStreamer> Streamer)
     : AsmPrinter(TM, std::move(Streamer)) {
   assert(OutStreamer && "AsmPrinter constructed without streamer");
+  RI = std::make_unique<MCResourceInfo>(OutContext);
 }
 
 StringRef AMDGPUAsmPrinter::getPassName() const {
@@ -375,6 +377,11 @@ bool AMDGPUAsmPrinter::doFinalization(Module &M) {
     getTargetStreamer()->EmitCodeEnd(STI);
   }
 
+  // Assign expressions which can only be resolved when all other functions are
+  // known.
+  RI->Finalize();
+  getTargetStreamer()->EmitMCResourceMaximums(
+      RI->getMaxVGPRSymbol(), RI->getMaxAGPRSymbol(), RI->getMaxSGPRSymbol());
   return AsmPrinter::doFinalization(M);
 }
 
@@ -537,6 +544,23 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   emitResourceUsageRemarks(MF, CurrentProgramInfo, MFI->isModuleEntryFunction(),
                            STM.hasMAIInsts());
 
+  {
+    const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
+        ResourceUsage->getResourceInfo();
+    RI->gatherResourceInfo(MF, Info);
+    using RIK = MCResourceInfo::ResourceInfoKind;
+    getTargetStreamer()->EmitMCResourceInfo(
+        RI->getSymbol(MF.getName(), RIK::RIK_NumVGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_NumAGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_NumSGPR),
+        RI->getSymbol(MF.getName(), RIK::RIK_PrivateSegSize),
+        RI->getSymbol(MF.getName(), RIK::RIK_UsesVCC),
+        RI->getSymbol(MF.getName(), RIK::RIK_UsesFlatScratch),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasDynSizedStack),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasRecursion),
+        RI->getSymbol(MF.getName(), RIK::RIK_HasIndirectCall));
+  }
+
   if (isVerbose()) {
     MCSectionELF *CommentSection =
         Context.getELFSection(".AMDGPU.csdata", ELF::SHT_PROGBITS, 0);
@@ -545,7 +569,7 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     if (!MFI->isEntryFunction()) {
       OutStreamer->emitRawComment(" Function info:", false);
       const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
-          ResourceUsage->getResourceInfo(&MF.getFunction());
+          ResourceUsage->getResourceInfo();
       emitCommonFunctionComments(
           Info.NumVGPR,
           STM.hasMAIInsts() ? Info.NumAGPR : std::optional<uint32_t>(),
@@ -717,7 +741,7 @@ uint64_t AMDGPUAsmPrinter::getFunctionCodeSize(const MachineFunction &MF) const 
 void AMDGPUAsmPrinter::getSIProgramInfo(SIProgramInfo &ProgInfo,
                                         const MachineFunction &MF) {
   const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
-      ResourceUsage->getResourceInfo(&MF.getFunction());
+      ResourceUsage->getResourceInfo();
   const GCNSubtarget &STM = MF.getSubtarget<GCNSubtarget>();
   MCContext &Ctx = MF.getContext();
 
@@ -734,9 +758,16 @@ void AMDGPUAsmPrinter::getSIProgramInfo(SIProgramInfo &ProgInfo,
       return false;
   };
 
-  ProgInfo.NumArchVGPR = CreateExpr(Info.NumVGPR);
-  ProgInfo.NumAccVGPR = CreateExpr(Info.NumAGPR);
-  ProgInfo.NumVGPR = CreateExpr(Info.getTotalNumVGPRs(STM));
+  auto GetSymRefExpr = [&](MCResourceInfo::ResourceInfoKind RIK) -> const MCExpr *{
+    MCSymbol *Sym = RI->getSymbol(MF.getName(), RIK);
+    return MCSymbolRefExpr::create(Sym, Ctx);
+  };
+
+  using RIK = MCResourceInfo::ResourceInfoKind;
+  ProgInfo.NumArchVGPR = GetSymRefExpr(RIK::RIK_NumVGPR);
+  ProgInfo.NumAccVGPR = GetSymRefExpr(RIK::RIK_NumAGPR);
+  ProgInfo.NumVGPR = AMDGPUVariadicMCExpr::createTotalNumVGPR(STM.hasGFX90AInsts(), ProgInfo.NumAccVGPR, ProgInfo.NumArchVGPR, Ctx);
+
   ProgInfo.AccumOffset =
       CreateExpr(alignTo(std::max(1, Info.NumVGPR), 4) / 4 - 1);
   ProgInfo.TgSplit = STM.isTgSplitEnabled();

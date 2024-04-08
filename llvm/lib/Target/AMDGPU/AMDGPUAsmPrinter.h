@@ -26,6 +26,7 @@ struct AMDGPUResourceUsageAnalysis;
 class AMDGPUTargetStreamer;
 class MCCodeEmitter;
 class MCOperand;
+class MCResourceInfo;
 
 namespace AMDGPU {
 struct MCKernelDescriptor;
@@ -40,6 +41,8 @@ private:
   void initializeTargetID(const Module &M);
 
   AMDGPUResourceUsageAnalysis *ResourceUsage;
+
+  std::unique_ptr<MCResourceInfo> RI;
 
   SIProgramInfo CurrentProgramInfo;
 
