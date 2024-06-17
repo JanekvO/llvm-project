@@ -15,6 +15,7 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/KnownBits.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
 
@@ -313,4 +314,206 @@ AMDGPUVariadicMCExpr::createOccupancy(unsigned InitOcc, const MCExpr *NumSGPRs,
                  CreateExpr(TargetTotalNumVGPRs), CreateExpr(Generation),
                  CreateExpr(InitOcc), NumSGPRs, NumVGPRs},
                 Ctx);
+}
+
+#if 0
+static KnownBits AMDGPUSimplifiedMCExprPrintImpl(const MCBinaryExpr *Expr, raw_ostream &OS, const MCAsmInfo *MAI, unsigned depth) {
+  const MCExpr *LHS = Expr->getLHS();
+  const MCExpr *RHS = Expr->getRHS();
+
+  KnownBits LHSKnown = AMDGPUSimplifiedMCExprPrintImpl(cast<MCExpr>(LHS), OS, MAI, depth);
+  KnownBits RHSKnown = AMDGPUSimplifiedMCExprPrintImpl(cast<MCExpr>(RHS), OS, MAI, depth);
+
+  switch (Expr->getOpcode()) {
+  default:
+    return KnownBits(/*BitWidth=*/64);
+  case MCBinaryExpr::Opcode::Add:
+    return KnownBits::computeForAddSub(/*Add=*/true, /*NSW=*/false, /*NUW=*/false, LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::And:
+    return LHSKnown & RHSKnown;
+  case MCBinaryExpr::Opcode::Div:
+    return KnownBits::udiv(LHSKnown, RHSKnown);
+  // case MCBinaryExpr::Opcode::EQ:
+  // case MCBinaryExpr::Opcode::GT:
+  // case MCBinaryExpr::Opcode::GTE:
+  // case MCBinaryExpr::Opcode::LAnd:
+  // case MCBinaryExpr::Opcode::LOr:
+  // case MCBinaryExpr::Opcode::LT:
+  // case MCBinaryExpr::Opcode::LTE:
+  case MCBinaryExpr::Opcode::Mod:
+    return KnownBits::urem(LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::Mul:
+    return KnownBits::mul(LHSKnown, RHSKnown);
+  // case MCBinaryExpr::Opcode::NE:
+  case MCBinaryExpr::Opcode::Or:
+    return LHSKnown | RHSKnown;
+  // case MCBinaryExpr::Opcode::OrNot:
+  case MCBinaryExpr::Opcode::Shl:
+    return KnownBits::shl(LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::AShr:
+    return KnownBits::ashr(LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::LShr:
+   return KnownBits::lshr(LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::Sub:
+    return KnownBits::computeForAddSub(/*Add=*/false, /*NSW=*/false, /*NUW=*/false, LHSKnown, RHSKnown);
+  case MCBinaryExpr::Opcode::Xor:
+    return LHSKnown ^ RHSKnown;
+  }
+}
+
+
+static KnownBits AMDGPUSimplifiedMCExprPrintImpl(const MCUnaryExpr *Expr, raw_ostream &OS, const MCAsmInfo *MAI, unsigned depth) {
+  const MCUnaryExpr *UExpr = cast<MCUnaryExpr>(Expr);
+  KnownBits KB = AMDGPUSimplifiedMCExprPrintImpl(UExpr->getSubExpr(), OS, MAI, depth);
+  if (KB.hasConflict())
+    return KnownBits();
+
+  switch(UExpr->getOpcode()) {
+  case MCUnaryExpr::Opcode::LNot:
+    assert(false && "LNot is not supported for MCExpr simplified print, unknown bits returned");
+    return KnownBits(/*BitWidth=*/64);
+  case MCUnaryExpr::Opcode::Minus:
+    KB.makeNegative();
+    return KB;
+  case MCUnaryExpr::Opcode::Not:
+    return KB.reverseBits();
+  case MCUnaryExpr::Opcode::Plus:
+    KB.makeNonNegative();
+    return KB;
+  }
+}
+
+static KnownBits AMDGPUSimplifiedMCExprPrintImpl(const MCSymbolRefExpr *Expr, raw_ostream &OS, const MCAsmInfo *MAI, unsigned depth) {
+  const MCSymbolRefExpr *RExpr = cast<MCSymbolRefExpr>(Expr);
+  const MCSymbol &Sym = Expr->getSymbol();
+  if (!Sym.isVariable())
+    return KnownBits(/*BitWidth=*/64);
+  
+  // Variable value retrieval is not for actual use but for knownbits analysis. 
+  return AMDGPUSimplifiedMCExprPrintImpl(Sym.getVariableValue(/*SetUsed=*/false), OS, MAI, depth);
+}
+#endif
+
+static KnownBits AMDGPUSimplifiedMCExprPrintImpl(const MCExpr *Expr,
+                                                 raw_ostream &OS,
+                                                 const MCAsmInfo *MAI,
+                                                 unsigned depth) {
+  if (depth == 0)
+    return KnownBits();
+
+  depth--;
+
+  switch (Expr->getKind()) {
+  case MCExpr::ExprKind::Binary: {
+    const MCBinaryExpr *BExpr = cast<MCBinaryExpr>(Expr);
+    const MCExpr *LHS = BExpr->getLHS();
+    const MCExpr *RHS = BExpr->getRHS();
+
+    KnownBits LHSKnown =
+        AMDGPUSimplifiedMCExprPrintImpl(cast<MCExpr>(LHS), OS, MAI, depth);
+    KnownBits RHSKnown =
+        AMDGPUSimplifiedMCExprPrintImpl(cast<MCExpr>(RHS), OS, MAI, depth);
+
+    switch (BExpr->getOpcode()) {
+    default:
+      return KnownBits(/*BitWidth=*/64);
+      break;
+    case MCBinaryExpr::Opcode::Add:
+      return KnownBits::computeForAddSub(/*Add=*/true, /*NSW=*/false,
+                                         /*NUW=*/false, LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::And:
+      return LHSKnown & RHSKnown;
+    case MCBinaryExpr::Opcode::Div:
+      return KnownBits::udiv(LHSKnown, RHSKnown);
+    // case MCBinaryExpr::Opcode::EQ:
+    // case MCBinaryExpr::Opcode::GT:
+    // case MCBinaryExpr::Opcode::GTE:
+    // case MCBinaryExpr::Opcode::LAnd:
+    // case MCBinaryExpr::Opcode::LOr:
+    // case MCBinaryExpr::Opcode::LT:
+    // case MCBinaryExpr::Opcode::LTE:
+    case MCBinaryExpr::Opcode::Mod:
+      return KnownBits::urem(LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::Mul:
+      return KnownBits::mul(LHSKnown, RHSKnown);
+    // case MCBinaryExpr::Opcode::NE:
+    case MCBinaryExpr::Opcode::Or:
+      return LHSKnown | RHSKnown;
+    // case MCBinaryExpr::Opcode::OrNot:
+    case MCBinaryExpr::Opcode::Shl:
+      return KnownBits::shl(LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::AShr:
+      return KnownBits::ashr(LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::LShr:
+      return KnownBits::lshr(LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::Sub:
+      return KnownBits::computeForAddSub(/*Add=*/false, /*NSW=*/false,
+                                         /*NUW=*/false, LHSKnown, RHSKnown);
+    case MCBinaryExpr::Opcode::Xor:
+      return LHSKnown ^ RHSKnown;
+    }
+  }
+  case MCExpr::ExprKind::Constant: {
+    const MCConstantExpr *CE = cast<MCConstantExpr>(Expr);
+    APInt APValue(/*BitWidth=*/64, CE->getValue(), /*isSigned=*/false);
+    return KnownBits::makeConstant(APValue);
+  }
+  case MCExpr::ExprKind::SymbolRef: {
+
+    const MCSymbolRefExpr *RExpr = cast<MCSymbolRefExpr>(Expr);
+    const MCSymbol &Sym = RExpr->getSymbol();
+    if (!Sym.isVariable())
+      return KnownBits(/*BitWidth=*/64);
+
+    // Variable value retrieval is not for actual use but for knownbits
+    // analysis.
+    return AMDGPUSimplifiedMCExprPrintImpl(
+        Sym.getVariableValue(/*SetUsed=*/false), OS, MAI, depth);
+  }
+  case MCExpr::ExprKind::Unary: {
+
+    const MCUnaryExpr *UExpr = cast<MCUnaryExpr>(Expr);
+    KnownBits KB =
+        AMDGPUSimplifiedMCExprPrintImpl(UExpr->getSubExpr(), OS, MAI, depth);
+    if (KB.hasConflict())
+      return KnownBits();
+
+    switch (UExpr->getOpcode()) {
+    case MCUnaryExpr::Opcode::LNot:
+      assert(false && "LNot is not supported for MCExpr simplified print, "
+                      "unknown bits returned");
+      return KnownBits(/*BitWidth=*/64);
+    case MCUnaryExpr::Opcode::Minus:
+      KB.makeNegative();
+      return KB;
+    case MCUnaryExpr::Opcode::Not:
+      return KB.reverseBits();
+    case MCUnaryExpr::Opcode::Plus:
+      KB.makeNonNegative();
+      return KB;
+    }
+  }
+  case MCExpr::ExprKind::Target: {
+    return KnownBits(/*BitWidth=*/64);
+  }
+  }
+}
+
+// Helper that will try to reduce the MCExpr print to only the necessary, if
+// possible. If not, it will verbosely print said expression.
+void llvm::AMDGPUMCExprPrint(const MCExpr *Expr, raw_ostream &OS,
+                             const MCAsmInfo *MAI) {
+  int64_t Val;
+  if (Expr->evaluateAsAbsolute(Val)) {
+    OS << Val;
+    return;
+  }
+
+  KnownBits KB = AMDGPUSimplifiedMCExprPrintImpl(Expr, OS, MAI, /*depth=*/10);
+  if (KB.isConstant()) {
+    OS << KB.getConstant();
+    return;
+  }
+
+  Expr->print(OS, MAI);
 }

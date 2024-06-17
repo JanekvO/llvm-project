@@ -107,6 +107,9 @@ public:
   }
 };
 
+void AMDGPUMCExprPrint(const MCExpr *Expr, raw_ostream &OS,
+                       const MCAsmInfo *MAI);
+
 } // end namespace llvm
 
 #endif // LLVM_LIB_TARGET_AMDGPU_MCTARGETDESC_AMDGPUMCEXPR_H
