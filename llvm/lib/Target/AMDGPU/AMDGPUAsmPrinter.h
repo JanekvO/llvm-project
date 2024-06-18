@@ -24,6 +24,7 @@ struct AMDGPUResourceUsageAnalysis;
 class AMDGPUTargetStreamer;
 class MCCodeEmitter;
 class MCOperand;
+class MCResourceInfo;
 
 namespace AMDGPU {
 struct MCKernelDescriptor;
@@ -39,6 +40,8 @@ private:
   void initializeTargetID(const Module &M);
 
   AMDGPUResourceUsageAnalysis *ResourceUsage;
+
+  std::unique_ptr<MCResourceInfo> RI;
 
   SIProgramInfo CurrentProgramInfo;
 
@@ -60,11 +63,6 @@ private:
   void EmitPALMetadata(const MachineFunction &MF,
                        const SIProgramInfo &KernelInfo);
   void emitPALFunctionMetadata(const MachineFunction &MF);
-  void emitCommonFunctionComments(uint32_t NumVGPR,
-                                  std::optional<uint32_t> NumAGPR,
-                                  uint32_t TotalNumVGPR, uint32_t NumSGPR,
-                                  uint64_t ScratchSize, uint64_t CodeSize,
-                                  const AMDGPUMachineFunction *MFI);
   void emitCommonFunctionComments(const MCExpr *NumVGPR, const MCExpr *NumAGPR,
                                   const MCExpr *TotalNumVGPR,
                                   const MCExpr *NumSGPR,
