@@ -338,12 +338,7 @@ void AMDGPUTargetAsmStreamer::EmitAmdhsaKernelDescriptor(
   };
 
   auto EmitMCExpr = [&](const MCExpr *Value) {
-    int64_t evaluatableValue;
-    if (Value->evaluateAsAbsolute(evaluatableValue)) {
-      OS << static_cast<uint64_t>(evaluatableValue);
-    } else {
-      Value->print(OS, MAI);
-    }
+    llvm::AMDGPUMCExprPrint(Value, OS, MAI);
   };
 
   OS << "\t\t.amdhsa_group_segment_fixed_size ";
