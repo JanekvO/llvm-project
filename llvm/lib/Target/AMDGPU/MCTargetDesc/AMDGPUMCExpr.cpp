@@ -331,6 +331,18 @@ static KnownBits AMDGPUMCExprKnownBits(const MCExpr *Expr, raw_ostream &OS,
     const MCExpr *LHS = BExpr->getLHS();
     const MCExpr *RHS = BExpr->getRHS();
 
+    // Some KnownBit analyses of constants may result in unknowns (e.g., 4/4
+    // with exact=false). It's better to resolve through MCExpr if both LHS and
+    // RHS are constants. Hopefully reduces recursion as well.
+    const MCConstantExpr *ConstantLHS = dyn_cast_or_null<MCConstantExpr>(LHS);
+    const MCConstantExpr *ConstantRHS = dyn_cast_or_null<MCConstantExpr>(RHS);
+    if (ConstantLHS && ConstantRHS) {
+      int64_t Value;
+      BExpr->evaluateAsAbsolute(Value);
+      APInt APValue(BitWidth, Value, /*isSigned=*/true);
+      return KnownBits::makeConstant(APValue);
+    }
+
     KnownBits LHSKnown = AMDGPUMCExprKnownBits(LHS, OS, MAI, depth);
     KnownBits RHSKnown = AMDGPUMCExprKnownBits(RHS, OS, MAI, depth);
 
