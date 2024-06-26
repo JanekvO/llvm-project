@@ -223,6 +223,10 @@ void AMDGPUPALMetadata::setRegister(unsigned Reg, const MCExpr *Val,
     if (!Val->evaluateAsAbsolute(Unused))
       REM[Reg] = Val;
     (void)Unused;
+  } else {
+    // Default to uint64_t 0 so additional calls to setRegister will allow
+    // propagate ORs.
+    N = (uint64_t)0;
   }
   DelayedExprs.assignDocNode(N, msgpack::Type::UInt, Val);
 }

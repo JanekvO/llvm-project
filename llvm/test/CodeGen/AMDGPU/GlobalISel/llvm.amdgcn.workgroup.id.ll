@@ -10,12 +10,12 @@ declare i32 @llvm.amdgcn.workgroup.id.z() #0
 ; ALL-LABEL: {{^}}test_workgroup_id_x:
 
 ; MESA3D: .amd_kernel_code_t
-; MESA3D: user_sgpr_count = 6
+; MESA3D: user_sgpr_count = ((((((alignto(test_workgroup_id_x.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_x.has_dyn_sized_stack|test_workgroup_id_x.has_recursion))|140)>>1)&31
 ; MESA3D: enable_sgpr_workgroup_id_x = 1
-; MESA3D: enable_sgpr_workgroup_id_y = 0
-; MESA3D: enable_sgpr_workgroup_id_z = 0
-; MESA3D: enable_sgpr_workgroup_info = 0
-; MESA3D: enable_vgpr_workitem_id = 0
+; MESA3D: enable_sgpr_workgroup_id_y = ((((((alignto(test_workgroup_id_x.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_x.has_dyn_sized_stack|test_workgroup_id_x.has_recursion))|140)>>8)&1
+; MESA3D: enable_sgpr_workgroup_id_z = ((((((alignto(test_workgroup_id_x.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_x.has_dyn_sized_stack|test_workgroup_id_x.has_recursion))|140)>>9)&1
+; MESA3D: enable_sgpr_workgroup_info = ((((((alignto(test_workgroup_id_x.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_x.has_dyn_sized_stack|test_workgroup_id_x.has_recursion))|140)>>10)&1
+; MESA3D: enable_vgpr_workitem_id = ((((((alignto(test_workgroup_id_x.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_x.has_dyn_sized_stack|test_workgroup_id_x.has_recursion))|140)>>11)&3
 ; MESA3D: enable_sgpr_grid_workgroup_count_x = 0
 ; MESA3D: enable_sgpr_grid_workgroup_count_y = 0
 ; MESA3D: enable_sgpr_grid_workgroup_count_z = 0
@@ -39,11 +39,11 @@ define amdgpu_kernel void @test_workgroup_id_x(ptr addrspace(1) %out) #1 {
 }
 
 ; ALL-LABEL: {{^}}test_workgroup_id_y:
-; MESA3D: user_sgpr_count = 6
+; MESA3D: user_sgpr_count = ((((((alignto(test_workgroup_id_y.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_y.has_dyn_sized_stack|test_workgroup_id_y.has_recursion))|396)>>1)&31
 ; MESA3D: enable_sgpr_workgroup_id_x = 1
 ; MESA3D: enable_sgpr_workgroup_id_y = 1
-; MESA3D: enable_sgpr_workgroup_id_z = 0
-; MESA3D: enable_sgpr_workgroup_info = 0
+; MESA3D: enable_sgpr_workgroup_id_z = ((((((alignto(test_workgroup_id_y.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_y.has_dyn_sized_stack|test_workgroup_id_y.has_recursion))|396)>>9)&1
+; MESA3D: enable_sgpr_workgroup_info = ((((((alignto(test_workgroup_id_y.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_y.has_dyn_sized_stack|test_workgroup_id_y.has_recursion))|396)>>10)&1
 ; MESA3D: enable_sgpr_grid_workgroup_count_x = 0
 ; MESA3D: enable_sgpr_grid_workgroup_count_y = 0
 ; MESA3D: enable_sgpr_grid_workgroup_count_z = 0
@@ -66,12 +66,12 @@ define amdgpu_kernel void @test_workgroup_id_y(ptr addrspace(1) %out) #1 {
 }
 
 ; ALL-LABEL: {{^}}test_workgroup_id_z:
-; MESA3D: user_sgpr_count = 6
+; MESA3D: user_sgpr_count = ((((((alignto(test_workgroup_id_z.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_z.has_dyn_sized_stack|test_workgroup_id_z.has_recursion))|652)>>1)&31
 ; MESA3D: enable_sgpr_workgroup_id_x = 1
-; MESA3D: enable_sgpr_workgroup_id_y = 0
+; MESA3D: enable_sgpr_workgroup_id_y = ((((((alignto(test_workgroup_id_z.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_z.has_dyn_sized_stack|test_workgroup_id_z.has_recursion))|652)>>8)&1
 ; MESA3D: enable_sgpr_workgroup_id_z = 1
-; MESA3D: enable_sgpr_workgroup_info = 0
-; MESA3D: enable_vgpr_workitem_id = 0
+; MESA3D: enable_sgpr_workgroup_info = ((((((alignto(test_workgroup_id_z.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_z.has_dyn_sized_stack|test_workgroup_id_z.has_recursion))|652)>>10)&1
+; MESA3D: enable_vgpr_workitem_id = ((((((alignto(test_workgroup_id_z.private_seg_size*64, 1024))/1024)>0)||(test_workgroup_id_z.has_dyn_sized_stack|test_workgroup_id_z.has_recursion))|652)>>11)&3
 ; MESA3D: enable_sgpr_private_segment_buffer = 1
 ; MESA3D: enable_sgpr_dispatch_ptr = 0
 ; MESA3D: enable_sgpr_queue_ptr = 0
