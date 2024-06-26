@@ -101,27 +101,6 @@ bool AMDGPUResourceUsageAnalysis::runOnMachineFunction(MachineFunction &MF) {
   return false;
 }
 
-// int32_t
-// AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo::getTotalNumSGPRs(
-//     const GCNSubtarget &ST) const {
-//   return NumExplicitSGPR +
-//          IsaInfo::getNumExtraSGPRs(&ST, UsesVCC, UsesFlatScratch,
-//                                    ST.getTargetID().isXnackOnOrAny());
-// }
-
-// int32_t
-// AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo::getTotalNumVGPRs(
-//     const GCNSubtarget &ST, int32_t ArgNumAGPR, int32_t ArgNumVGPR) const {
-//   return AMDGPU::getTotalNumVGPRs(ST.hasGFX90AInsts(), ArgNumAGPR,
-//   ArgNumVGPR);
-// }
-
-// int32_t
-// AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo::getTotalNumVGPRs(
-//     const GCNSubtarget &ST) const {
-//   return getTotalNumVGPRs(ST, NumAGPR, NumVGPR);
-// }
-
 AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo
 AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
     const MachineFunction &MF, uint32_t AssumedStackSizeForDynamicSizeObjects,
@@ -214,7 +193,7 @@ AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
   int32_t MaxVGPR = -1;
   int32_t MaxAGPR = -1;
   int32_t MaxSGPR = -1;
-  uint64_t CalleeFrameSize = 0;
+  Info.CalleeSegmentSize = 0;
 
   for (const MachineBasicBlock &MBB : MF) {
     for (const MachineInstr &MI : MBB) {
@@ -483,7 +462,15 @@ AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
         if (Callee && AMDGPU::isEntryFunctionCC(Callee->getCallingConv()))
           report_fatal_error("invalid call to entry function");
 
-        if (Callee && Callee->doesNotRecurse())
+        auto isSameFunction = [](const MachineFunction &MF, const Function *F) {
+          MachineModuleInfo &MMI = MF.getMMI();
+          MachineFunction *FunctionMF = MMI.getMachineFunction(*F);
+
+          return FunctionMF &&
+                 (MF.getFunctionNumber() == FunctionMF->getFunctionNumber());
+        };
+
+        if (Callee && !isSameFunction(MF, Callee))
           Info.Callees.push_back(Callee);
 
         bool IsIndirect = !Callee || Callee->isDeclaration();
@@ -501,15 +488,15 @@ AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
             // directly call the tail called function. If a kernel directly
             // calls a tail recursive function, we'll assume maximum stack size
             // based on the regular call instruction.
-            CalleeFrameSize = std::max(
-                CalleeFrameSize,
+            Info.CalleeSegmentSize = std::max(
+                Info.CalleeSegmentSize,
                 static_cast<uint64_t>(AssumedStackSizeForExternalCall));
           }
         }
 
         if (IsIndirect) {
-          CalleeFrameSize =
-              std::max(CalleeFrameSize,
+          Info.CalleeSegmentSize =
+              std::max(Info.CalleeSegmentSize,
                        static_cast<uint64_t>(AssumedStackSizeForExternalCall));
 
           // Register usage of indirect calls gets handled later
@@ -525,7 +512,6 @@ AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
   Info.NumExplicitSGPR = MaxSGPR + 1;
   Info.NumVGPR = MaxVGPR + 1;
   Info.NumAGPR = MaxAGPR + 1;
-  Info.PrivateSegmentSize += CalleeFrameSize;
 
   return Info;
 }

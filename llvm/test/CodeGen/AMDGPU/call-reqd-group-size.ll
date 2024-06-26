@@ -25,7 +25,6 @@ define amdgpu_kernel void @known_x_0(ptr addrspace(1) %out) !reqd_work_group_siz
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 2
 
 define amdgpu_kernel void @known_y_0(ptr addrspace(1) %out) !reqd_work_group_size !1 {
 ; CHECK-LABEL: known_y_0:
@@ -44,7 +43,6 @@ define amdgpu_kernel void @known_y_0(ptr addrspace(1) %out) !reqd_work_group_siz
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 2
 
 define amdgpu_kernel void @known_z_0(ptr addrspace(1) %out) !reqd_work_group_size !2 {
 ; CHECK-LABEL: known_z_0:
@@ -63,7 +61,6 @@ define amdgpu_kernel void @known_z_0(ptr addrspace(1) %out) !reqd_work_group_siz
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 1
 
 define amdgpu_kernel void @known_yz_0(ptr addrspace(1) %out) !reqd_work_group_size !3 {
 ; CHECK-LABEL: known_yz_0:
@@ -82,7 +79,6 @@ define amdgpu_kernel void @known_yz_0(ptr addrspace(1) %out) !reqd_work_group_si
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 0
 
 define amdgpu_kernel void @known_xz_0(ptr addrspace(1) %out) !reqd_work_group_size !4 {
 ; CHECK-LABEL: known_xz_0:
@@ -101,7 +97,6 @@ define amdgpu_kernel void @known_xz_0(ptr addrspace(1) %out) !reqd_work_group_si
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 1
 
 
 define amdgpu_kernel void @known_xyz_0(ptr addrspace(1) %out) !reqd_work_group_size !5 {
@@ -121,7 +116,38 @@ define amdgpu_kernel void @known_xyz_0(ptr addrspace(1) %out) !reqd_work_group_s
   call void @callee()
   ret void
 }
-; CHECK: .amdhsa_system_vgpr_workitem_id 0
+
+; CHECK-LABEL:  amdhsa.kernels:
+; CHECK:        .name: known_x_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 1
+; CHECK:          - 64
+; CHECK:          - 64
+; CHECK:        .name: known_y_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 64
+; CHECK:          - 1
+; CHECK:          - 64
+; CHECK:        .name: known_z_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 64
+; CHECK:          - 64
+; CHECK:          - 1
+; CHECK:        .name: known_yz_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 64
+; CHECK:          - 1
+; CHECK:          - 1
+; CHECK:        .name: known_xz_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 1
+; CHECK:          - 64
+; CHECK:          - 1
+; CHECK:        .name: known_xyz_0
+; CHECK:        .reqd_workgroup_size:
+; CHECK:          - 1
+; CHECK:          - 1
+; CHECK:          - 1
 
 attributes #0 = { "amdgpu-no-dispatch-id" "amdgpu-no-dispatch-ptr" "amdgpu-no-implicitarg-ptr" "amdgpu-no-lds-kernel-id" "amdgpu-no-queue-ptr" "amdgpu-no-workgroup-id-x" "amdgpu-no-workgroup-id-y" "amdgpu-no-workgroup-id-z" }
 

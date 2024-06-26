@@ -14,6 +14,7 @@
 
 #include "AMDGPUMCResourceInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCSymbol.h"
@@ -93,9 +94,15 @@ void MCResourceInfo::assignResourceInfoExpr(
   const MCExpr *SymVal = localConstExpr;
   if (Callees.size() > 0) {
     std::vector<const MCExpr *> ArgExprs;
+    // Avoid recursive symbol assignment.
+    SmallSet<StringRef, 8> Visited;
     ArgExprs.push_back(localConstExpr);
+    Visited.insert(MF.getName());
 
     for (const Function *Callee : Callees) {
+      if (Visited.contains(Callee->getName()))
+        continue;
+      Visited.insert(Callee->getName());
       MCSymbol *calleeValSym = getSymbol(Callee->getName(), RIK);
       ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, OutContext));
     }
@@ -113,8 +120,7 @@ void MCResourceInfo::gatherResourceInfo(
   MCSymbol *maxAGPRSym = getMaxAGPRSymbol();
   MCSymbol *maxSGPRSym = getMaxSGPRSymbol();
 
-  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv()) &&
-      !FRI.HasIndirectCall) {
+  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv())) {
     addMaxVGPRCandidate(FRI.NumVGPR);
     addMaxAGPRCandidate(FRI.NumAGPR);
     addMaxSGPRCandidate(FRI.NumExplicitSGPR);
@@ -139,16 +145,23 @@ void MCResourceInfo::gatherResourceInfo(
   setMaxReg(maxSGPRSym, FRI.NumExplicitSGPR, RIK_NumSGPR);
 
   {
-    // The expression for private segment size should be: localValue +
-    // max(callees)
+    // The expression for private segment size should be: FRI.PrivateSegmentSize
+    // + max(FRI.Callees, FRI.CalleeSegmentSize)
     std::vector<const MCExpr *> ArgExprs;
-    for (const Function *Callee : FRI.Callees) {
-      MCSymbol *calleeValSym = getSymbol(Callee->getName(), RIK_PrivateSegSize);
-      ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, OutContext));
+    if (FRI.CalleeSegmentSize)
+      ArgExprs.push_back(
+          MCConstantExpr::create(FRI.CalleeSegmentSize, OutContext));
+
+    if (!FRI.HasIndirectCall) {
+      for (const Function *Callee : FRI.Callees) {
+        MCSymbol *calleeValSym =
+            getSymbol(Callee->getName(), RIK_PrivateSegSize);
+        ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, OutContext));
+      }
     }
     const MCExpr *localConstExpr =
         MCConstantExpr::create(FRI.PrivateSegmentSize, OutContext);
-    if (ArgExprs.size() > 0 && !FRI.HasIndirectCall) {
+    if (ArgExprs.size() > 0) {
       const AMDGPUVariadicMCExpr *transitiveExpr =
           AMDGPUVariadicMCExpr::createMax(ArgExprs, OutContext);
       localConstExpr =

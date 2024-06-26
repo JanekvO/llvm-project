@@ -85,8 +85,11 @@ void MCKernelDescriptor::bits_set(const MCExpr *&Dst, const MCExpr *Value,
   auto Sft = MCConstantExpr::create(Shift, Ctx);
   auto Msk = MCConstantExpr::create(Mask, Ctx);
   Dst = MCBinaryExpr::createAnd(Dst, MCUnaryExpr::createNot(Msk, Ctx), Ctx);
-  Dst = MCBinaryExpr::createOr(Dst, MCBinaryExpr::createShl(Value, Sft, Ctx),
-                               Ctx);
+  Dst = MCBinaryExpr::createOr(
+      Dst,
+      MCBinaryExpr::createAnd(MCBinaryExpr::createShl(Value, Sft, Ctx), Msk,
+                              Ctx),
+      Ctx);
 }
 
 const MCExpr *MCKernelDescriptor::bits_get(const MCExpr *Src, uint32_t Shift,

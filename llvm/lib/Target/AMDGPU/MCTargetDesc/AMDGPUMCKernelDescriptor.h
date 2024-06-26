@@ -38,7 +38,7 @@ struct MCKernelDescriptor {
   getDefaultAmdhsaKernelDescriptor(const MCSubtargetInfo *STI, MCContext &Ctx);
   // MCExpr for:
   // Dst = Dst & ~Mask
-  // Dst = Dst | (Value << Shift)
+  // Dst = Dst | ((Value << Shift) & Mask)
   static void bits_set(const MCExpr *&Dst, const MCExpr *Value, uint32_t Shift,
                        uint32_t Mask, MCContext &Ctx);
 
