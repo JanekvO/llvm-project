@@ -483,7 +483,15 @@ AMDGPUResourceUsageAnalysis::analyzeResourceUsage(
         if (Callee && AMDGPU::isEntryFunctionCC(Callee->getCallingConv()))
           report_fatal_error("invalid call to entry function");
 
-        if (Callee && Callee->doesNotRecurse())
+        auto isSameFunction = [](const MachineFunction &MF, const Function *F) {
+          MachineModuleInfo &MMI = MF.getMMI();
+          MachineFunction *FunctionMF = MMI.getMachineFunction(*F);
+
+          return FunctionMF &&
+                 (MF.getFunctionNumber() == FunctionMF->getFunctionNumber());
+        };
+
+        if (Callee && !isSameFunction(MF, Callee))
           Info.Callees.push_back(Callee);
 
         bool IsIndirect = !Callee || Callee->isDeclaration();

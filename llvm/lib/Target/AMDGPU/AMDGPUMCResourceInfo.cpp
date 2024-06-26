@@ -14,6 +14,7 @@
 
 #include "AMDGPUMCResourceInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCSymbol.h"
@@ -93,9 +94,15 @@ void MCResourceInfo::assignResourceInfoExpr(
   const MCExpr *SymVal = localConstExpr;
   if (Callees.size() > 0) {
     std::vector<const MCExpr *> ArgExprs;
+    // Avoid recursive symbol assignment.
+    SmallSet<StringRef, 8> Seen;
     ArgExprs.push_back(localConstExpr);
+    Seen.insert(MF.getName());
 
     for (const Function *Callee : Callees) {
+      if (Seen.contains(Callee->getName()))
+        continue;
+      Seen.insert(Callee->getName());
       MCSymbol *calleeValSym = getSymbol(Callee->getName(), RIK);
       ArgExprs.push_back(MCSymbolRefExpr::create(calleeValSym, OutContext));
     }
@@ -113,8 +120,7 @@ void MCResourceInfo::gatherResourceInfo(
   MCSymbol *maxAGPRSym = getMaxAGPRSymbol();
   MCSymbol *maxSGPRSym = getMaxSGPRSymbol();
 
-  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv()) &&
-      !FRI.HasIndirectCall) {
+  if (!AMDGPU::isEntryFunctionCC(MF.getFunction().getCallingConv())) {
     addMaxVGPRCandidate(FRI.NumVGPR);
     addMaxAGPRCandidate(FRI.NumAGPR);
     addMaxSGPRCandidate(FRI.NumExplicitSGPR);

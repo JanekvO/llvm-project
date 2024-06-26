@@ -803,7 +803,7 @@ void AMDGPUAsmPrinter::getSIProgramInfo(SIProgramInfo &ProgInfo,
   ProgInfo.AccumOffset = MCBinaryExpr::createSub(
       MCBinaryExpr::createDiv(AMDGPUVariadicMCExpr::createAlignTo(
                                   AMDGPUVariadicMCExpr::createMax(
-                                      {ConstOne, ProgInfo.NumVGPR}, Ctx),
+                                      {ConstOne, ProgInfo.NumArchVGPR}, Ctx),
                                   ConstFour, Ctx),
                               ConstFour, Ctx),
       ConstOne, Ctx);
