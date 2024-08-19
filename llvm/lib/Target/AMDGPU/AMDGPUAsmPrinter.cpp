@@ -630,6 +630,10 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     OutStreamer->switchSection(ConfigSection);
   }
 
+  const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
+      ResourceUsage->getResourceInfo();
+  RI->gatherResourceInfo(MF, Info);
+
   if (MFI->isModuleEntryFunction()) {
     getSIProgramInfo(CurrentProgramInfo, MF);
   }
@@ -662,9 +666,6 @@ bool AMDGPUAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
                            STM.hasMAIInsts());
 
   {
-    const AMDGPUResourceUsageAnalysis::SIFunctionResourceInfo &Info =
-        ResourceUsage->getResourceInfo();
-    RI->gatherResourceInfo(MF, Info);
     using RIK = MCResourceInfo::ResourceInfoKind;
     getTargetStreamer()->EmitMCResourceInfo(
         RI->getSymbol(MF.getName(), RIK::RIK_NumVGPR),
