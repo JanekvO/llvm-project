@@ -323,6 +323,10 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
       switch (Op) {
       case ISD::LOAD:
       case ISD::STORE:
+#if 1
+      case ISD::MLOAD:
+      case ISD::MSTORE:
+#endif
       case ISD::BUILD_VECTOR:
       case ISD::BITCAST:
       case ISD::UNDEF:
@@ -624,6 +628,10 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
         switch (Op) {
         case ISD::LOAD:
         case ISD::STORE:
+#if 1
+        case ISD::MLOAD:
+        case ISD::MSTORE:
+#endif 
         case ISD::BUILD_VECTOR:
         case ISD::BITCAST:
         case ISD::UNDEF:
@@ -643,6 +651,57 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
         }
       }
     }
+
+#if 1
+    setOperationAction(ISD::MLOAD,
+                     {MVT::v2i32,  MVT::v3i32,  MVT::v4i32,  MVT::v5i32,
+                      MVT::v6i32,  MVT::v7i32,  MVT::v8i32,  MVT::v9i32,
+                      MVT::v10i32, MVT::v11i32, MVT::v12i32, MVT::v16i32,
+                      MVT::i1,     MVT::v32i32},
+                     Custom);
+
+    setOperationAction(ISD::MSTORE,
+                     {MVT::v2i32,  MVT::v3i32,  MVT::v4i32,  MVT::v5i32,
+                      MVT::v6i32,  MVT::v7i32,  MVT::v8i32,  MVT::v9i32,
+                      MVT::v10i32, MVT::v11i32, MVT::v12i32, MVT::v16i32,
+                      MVT::i1,     MVT::v32i32},
+                     Custom);
+    
+    setOperationAction(ISD::MLOAD, MVT::v8i1, Custom);
+    setOperationAction(ISD::MSTORE, MVT::v4i1, Custom);
+
+    setOperationAction(ISD::MLOAD, MVT::v8bf16, Promote);
+    AddPromotedToType(ISD::MLOAD, MVT::v8bf16, MVT::v4i32);
+
+    setOperationAction(ISD::STORE, MVT::v4bf16, Promote);
+    AddPromotedToType(ISD::STORE, MVT::v4bf16, MVT::v2i32);
+#else
+    setOperationAction(ISD::MLOAD,
+                     {MVT::v2i32,  MVT::v3i32,  MVT::v4i32,  MVT::v5i32,
+                      MVT::v6i32,  MVT::v7i32,  MVT::v8i32,  MVT::v9i32,
+                      MVT::v10i32, MVT::v11i32, MVT::v12i32, MVT::v16i32,
+                      MVT::i1,     MVT::v32i32},
+                     Legal);
+
+    setOperationAction(ISD::MSTORE,
+                     {MVT::v2i32,  MVT::v3i32,  MVT::v4i32,  MVT::v5i32,
+                      MVT::v6i32,  MVT::v7i32,  MVT::v8i32,  MVT::v9i32,
+                      MVT::v10i32, MVT::v11i32, MVT::v12i32, MVT::v16i32,
+                      MVT::i1,     MVT::v32i32},
+                     Legal);
+    
+    setOperationAction(ISD::MLOAD, MVT::v8i1, Promote);
+    AddPromotedToType(ISD::MLOAD, MVT::v8i1, MVT::i8);
+
+    setOperationAction(ISD::MSTORE, MVT::v4i1, Promote);
+    AddPromotedToType(ISD::MSTORE, MVT::v4i1, MVT::i8);
+
+    setOperationAction(ISD::MLOAD, MVT::v8bf16, Promote);
+    AddPromotedToType(ISD::MLOAD, MVT::v8bf16, MVT::v4i32);
+
+    setOperationAction(ISD::STORE, MVT::v4bf16, Promote);
+    AddPromotedToType(ISD::STORE, MVT::v4bf16, MVT::v2i32);
+#endif
 
     // v_perm_b32 can handle either of these.
     setOperationAction(ISD::BSWAP, {MVT::i16, MVT::v2i16}, Legal);

@@ -1446,6 +1446,11 @@ SDValue AMDGPUTargetLowering::LowerOperation(SDValue Op,
   case ISD::CTLZ_ZERO_UNDEF:
     return LowerCTLZ_CTTZ(Op, DAG);
   case ISD::DYNAMIC_STACKALLOC: return LowerDYNAMIC_STACKALLOC(Op, DAG);
+#if 1
+  case ISD::MLOAD:
+  case ISD::MSTORE:
+    return LowerMaskedMem(Op, DAG);
+#endif
   }
   return Op;
 }
@@ -3179,6 +3184,121 @@ SDValue AMDGPUTargetLowering::lowerCTLZResults(SDValue Op,
 
   return DAG.getNode(ISD::TRUNCATE, SL, ResultVT, NewOp);
 }
+
+#if 0
+  ///     Val, OutChain = MLOAD(BasePtr, Mask, PassThru)
+  ///     OutChain = MSTORE(Value, BasePtr, Mask)
+SDValue AMDGPUTargetLowering::LowerMaskedMem(SDValue Op, SelectionDAG &DAG) const {
+  SDLoc SL(Op);
+  auto VT = Op.getValueType();
+  SmallVector<SDValue, 4> VArgs;
+
+  // Mask is going to be splatted, so can just take any of the values and use that as conditional boolean.
+  if (Op.getOpcode() == ISD::MLOAD) {
+    auto BasePtr = Op.getOperand(0);
+    auto Mask = Op.getOperand(1);
+    auto MaskElt = DAG.ExtractVectorElements(Mask, VArgs, 0, 1);
+
+    auto Load = DAG.getLoad();
+
+  } else if (Op.getOpcode() == ISD::MSTORE) {
+    auto Value = Op.getOperand(0);
+    auto BasePtr = Op.getOperand(1);
+    auto Mask = Op.getOperand(2);
+    auto MaskElt = DAG.ExtractVectorElements(Mask, VArgs, 0, 1);
+
+  } else {
+    llvm_unreachable("sldkjfdlkfg");
+  }
+
+}
+#else
+
+SDValue AMDGPUTargetLowering::LowerMaskedMem(SDValue Op, SelectionDAG &DAG) const {
+  auto LoadCase = [&](SDValue Op, SelectionDAG &DAG) -> SDValue {
+    auto *N = cast<MaskedLoadSDNode>(Op.getNode());
+    SDValue Ch  = N->getChain();
+    SDValue Ptr = N->getBasePtr();
+    SDValue Offset = N->getOffset();
+    SDValue Mask = N->getMask();
+    Align Alignment = N->getOriginalAlign();
+    SDLoc DL(N);
+
+    auto VT = Op.getValueType();
+    SDValue MaskElt = DAG.getSplatValue(Mask);
+    SDValue MaskedTrue = DAG.getConstant(0xffffffffffffffff, DL, MVT::i64);
+    SDValue MaskedFalse = DAG.getConstant(0x0, DL, MVT::i64);
+
+    SDValue MaskSelect = DAG.getNode(ISD::SELECT, DL, MVT::i64, MaskElt,
+                                  MaskedTrue, MaskedFalse);
+
+    const GCNSubtarget &ST = DAG.getSubtarget<GCNSubtarget>();
+    Register Exec = ST.isWave32() ? AMDGPU::EXEC_LO : AMDGPU::EXEC;
+    EVT ExecCopyVT = ST.isWave32() ? MVT::i32 : MVT::i64;
+    SDValue ExecCopy = DAG.getCopyFromReg(Ch, DL, Exec, ExecCopyVT);
+    SDValue ExecAnd = DAG.getNode(ISD::AND, DL, ExecCopyVT, ExecCopy, MaskSelect);
+    SDValue SetExec = DAG.getCopyToReg(ExecCopy.getValue(1), DL, Exec, ExecAnd);
+
+    SDValue NewLoad = DAG.getLoad(
+      N->getAddressingMode(), N->getExtensionType(), VT, DL, SetExec, Ptr,
+      Offset, N->getPointerInfo(), N->getMemoryVT(), Alignment,
+      N->getMemOperand()->getFlags(), N->getAAInfo(),
+      nullptr); // Drop ranges
+    
+    // MemSDNode *NewLoadNode = cast<MemSDNode>(NewLoad.getNode());
+    // SDValue RestoreExec = DAG.getCopyToReg(NewLoadNode->getChain(), DL, Exec, ExecCopy);
+    SDValue RestoreExec = DAG.getCopyToReg(NewLoad, DL, Exec, ExecCopy);
+    return DAG.getMergeValues({NewLoad.getValue(0), RestoreExec}, DL);
+  };
+
+  auto StoreCase = [&](SDValue Op, SelectionDAG &DAG) -> SDValue {
+    auto *N = cast<MaskedStoreSDNode>(Op.getNode());
+    SDValue Ch  = N->getChain();
+    SDValue Ptr = N->getBasePtr();
+    SDValue Offset = N->getOffset();
+    SDValue Mask = N->getMask();
+    SDValue Data = N->getValue();
+    Align Alignment = N->getOriginalAlign();
+    SDLoc DL(N);
+
+    auto VT = Op.getValueType();
+    SDValue MaskElt = DAG.getSplatValue(Mask);
+    SDValue MaskedTrue = DAG.getConstant(0xffffffffffffffff, DL, MVT::i64);
+    SDValue MaskedFalse = DAG.getConstant(0x0, DL, MVT::i64);
+
+    SDValue MaskSelect = DAG.getNode(ISD::SELECT, DL, MVT::i64, MaskElt,
+                                  MaskedTrue, MaskedFalse);
+
+    const GCNSubtarget &ST = DAG.getSubtarget<GCNSubtarget>();
+    Register Exec = ST.isWave32() ? AMDGPU::EXEC_LO : AMDGPU::EXEC;
+    EVT ExecCopyVT = ST.isWave32() ? MVT::i32 : MVT::i64;
+    SDValue ExecCopy = DAG.getCopyFromReg(Ch, DL, Exec, ExecCopyVT);
+    SDValue ExecAnd = DAG.getNode(ISD::AND, DL, ExecCopyVT, ExecCopy, MaskSelect);
+    SDValue SetExec = DAG.getCopyToReg(ExecCopy.getValue(1), DL, Exec, ExecAnd);
+
+    SDValue DstAddr = DAG.getNode(ISD::ADD, DL, MVT::i64, Ptr, Offset);
+    SDValue NewStore = DAG.getStore(SetExec, DL, Data, DstAddr, N->getPointerInfo(), Alignment, N->getMemOperand()->getFlags(), N->getAAInfo());
+  
+    //MemSDNode *NewStoreNode = cast<MemSDNode>(NewStore.getNode());
+    //SDValue RestoreExec = DAG.getCopyToReg(NewStoreNode->getChain(), DL, Exec, ExecCopy);
+    SDValue RestoreExec = DAG.getCopyToReg(NewStore, DL, Exec, ExecCopy);
+    return RestoreExec;
+    // return DAG.getMergeValues({NewStore.getValue(0), RestoreExec}, DL);
+  };
+
+  // SDLoc SL(Op);
+  // auto VT = Op.getValueType();
+  // SmallVector<SDValue, 4> VArgs;
+
+  // Mask is going to be splatted, so can just take any of the values and use that as conditional boolean.
+  if (Op.getOpcode() == ISD::MLOAD) {
+    return LoadCase(Op, DAG);
+  } else if (Op.getOpcode() == ISD::MSTORE) {
+    return StoreCase(Op, DAG);
+  }
+  llvm_unreachable("sldkjfdlkfg");
+}
+#endif
 
 SDValue AMDGPUTargetLowering::LowerCTLZ_CTTZ(SDValue Op, SelectionDAG &DAG) const {
   SDLoc SL(Op);

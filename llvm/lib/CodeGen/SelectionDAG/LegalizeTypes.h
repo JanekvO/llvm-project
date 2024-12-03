@@ -975,6 +975,7 @@ private:
   SDValue SplitVecOp_VP_STORE(VPStoreSDNode *N, unsigned OpNo);
   SDValue SplitVecOp_VP_STRIDED_STORE(VPStridedStoreSDNode *N, unsigned OpNo);
   SDValue SplitVecOp_MSTORE(MaskedStoreSDNode *N, unsigned OpNo);
+  SDValue SplitVecOp_MLOAD(MaskedLoadSDNode *N, unsigned OpNo);
   SDValue SplitVecOp_Scatter(MemSDNode *N, unsigned OpNo);
   SDValue SplitVecOp_Gather(MemSDNode *MGT, unsigned OpNo);
   SDValue SplitVecOp_CONCAT_VECTORS(SDNode *N);

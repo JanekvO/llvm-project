@@ -199,6 +199,26 @@ public:
     return AMDGPU::addrspacesMayAlias(AS0, AS1);
   }
 
+  static bool isLegalMaskedTypes(Type *DataType, Align Alignment) {
+    if (DataType->getTypeID() == Type::TypeID::FixedVectorTyID) {
+      if (DataType->getContainedType(0)->isBFloatTy()) {
+        FixedVectorType *VTy = cast<FixedVectorType>(DataType);
+        unsigned NumElements = VTy->getNumElements();
+        return NumElements == 8 || NumElements == 4;
+      }
+    }
+
+    return false;
+  }
+
+  bool isLegalMaskedStore(Type *DataType, Align Alignment) const {
+    return isLegalMaskedTypes(DataType, Alignment);
+  }
+
+  bool isLegalMaskedLoad(Type *DataType, Align Alignment) const {
+    return isLegalMaskedTypes(DataType, Alignment);
+  }
+
   unsigned getFlatAddressSpace() const {
     // Don't bother running InferAddressSpaces pass on graphics shaders which
     // don't use flat addressing.

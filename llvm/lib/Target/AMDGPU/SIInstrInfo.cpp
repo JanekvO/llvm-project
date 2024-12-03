@@ -7418,10 +7418,51 @@ void SIInstrInfo::moveToVALUImpl(SIInstrWorklist &Worklist,
     // hope for the best.
     if (Inst.isCopy() && DstReg.isPhysical() &&
         RI.isVGPR(MRI, Inst.getOperand(1).getReg())) {
-      // TODO: Only works for 32 bit registers.
-      BuildMI(*Inst.getParent(), &Inst, Inst.getDebugLoc(),
+      
+      //const MachineFunction *MF = Inst.getParent()->getParent();
+      //auto *TRI = MRI.getTargetRegisterInfo();
+      const TargetRegisterClass *DstRC = RI.getRegClassForOperandReg(MRI, Inst.getOperand(0));
+      const TargetRegisterClass *SrcRC = RI.getRegClassForOperandReg(MRI, Inst.getOperand(1));
+      unsigned RegSize = RI.getRegSizeInBits(*DstRC);
+      //unsigned RegSize = TRI->getRegSizeInBits(*DstRC);
+
+      assert(RegSize % 32 == 0 && "Should be divisible by 32");
+      unsigned N = RegSize / 32;
+
+      if (DstReg == RI.getExec()) {
+          Register SubSrcReg1 = buildExtractSubReg(
+              Inst, MRI, Inst.getOperand(1), SrcRC,
+              RI.getSubRegFromChannel(0), &AMDGPU::VGPR_32RegClass);
+          auto ResOne = BuildMI(*Inst.getParent(), &Inst, Inst.getDebugLoc(),
+              get(AMDGPU::V_READFIRSTLANE_B32), AMDGPU::EXEC_LO)
+          .addReg(SubSrcReg1);
+          Register SubSrcReg2 = buildExtractSubReg(
+              Inst, MRI, Inst.getOperand(1), SrcRC,
+              RI.getSubRegFromChannel(1), &AMDGPU::VGPR_32RegClass);
+          BuildMI(*Inst.getParent(), &Inst, Inst.getDebugLoc(),
+              get(AMDGPU::V_READFIRSTLANE_B32), AMDGPU::EXEC_HI)
+          .addReg(SubSrcReg2);
+      } else if (N > 1) {
+        auto Result = BuildMI(*MBB, &Inst, Inst.getDebugLoc(),
+                              get(AMDGPU::REG_SEQUENCE), DstReg);
+        for (unsigned i = 0; i < N; ++i) {
+          Register PartialSrc = buildExtractSubReg(
+              Result, MRI, Inst.getOperand(1), SrcRC,
+              RI.getSubRegFromChannel(i), &AMDGPU::VGPR_32RegClass);
+          Register PartialDst =
+              MRI.createVirtualRegister(&AMDGPU::SReg_32RegClass);
+          BuildMI(*Inst.getParent(), *Result, Result->getDebugLoc(),
+                get(AMDGPU::V_READFIRSTLANE_B32), PartialDst)
+            .addReg(PartialSrc);
+          Result.addReg(PartialDst).addImm(RI.getSubRegFromChannel(i));
+        }
+      } else {
+        // TODO: Only works for 32 bit registers.
+        BuildMI(*Inst.getParent(), &Inst, Inst.getDebugLoc(),
               get(AMDGPU::V_READFIRSTLANE_B32), Inst.getOperand(0).getReg())
           .add(Inst.getOperand(1));
+      }
+
       Inst.eraseFromParent();
       return;
     }

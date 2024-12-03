@@ -3255,6 +3255,8 @@ bool DAGTypeLegalizer::SplitVectorOperand(SDNode *N, unsigned OpNo) {
   case ISD::MSTORE:
     Res = SplitVecOp_MSTORE(cast<MaskedStoreSDNode>(N), OpNo);
     break;
+  // case ISD::MLOAD:
+  //   Res = SplitVecOp_MLOAD(Cast<MaskedLoadSDNode>(N), OpNo);
   case ISD::MSCATTER:
   case ISD::VP_SCATTER:
     Res = SplitVecOp_Scatter(cast<MemSDNode>(N), OpNo);
@@ -3896,6 +3898,30 @@ SDValue DAGTypeLegalizer::SplitVecOp_VP_STRIDED_STORE(VPStridedStoreSDNode *N,
   // other one.
   return DAG.getNode(ISD::TokenFactor, DL, MVT::Other, Lo, Hi);
 }
+
+// SDValue DAGTypeLegalizer::SplitVecOp_MLOAD(MaskedLoadSDNode *N, unsigned OpNo) {
+//   assert(OpNo == 1 && "Only OpNo 1 is asked of us...");
+//   SDValue Ch  = N->getChain();
+//   SDValue Ptr = N->getBasePtr();
+//   SDValue Offset = N->getOffset();
+//   SDValue Mask = N->getMask();
+//   //SDValue Data = N->getValue();
+//   Align Alignment = N->getOriginalAlign();
+//   SDLoc DL(N);
+
+//   // Split Mask operand
+//   SDValue MaskLo, MaskHi;
+//   if (OpNo == 1 && Mask.getOpcode() == ISD::SETCC) {
+//     SplitVecRes_SETCC(Mask.getNode(), MaskLo, MaskHi);
+//   } else {
+//     if (getTypeAction(Mask.getValueType()) == TargetLowering::TypeSplitVector)
+//       GetSplitVector(Mask, MaskLo, MaskHi);
+//     else
+//       std::tie(MaskLo, MaskHi) = DAG.SplitVector(Mask, DL);
+//   }
+
+
+// }
 
 SDValue DAGTypeLegalizer::SplitVecOp_MSTORE(MaskedStoreSDNode *N,
                                             unsigned OpNo) {
