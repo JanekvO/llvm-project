@@ -626,9 +626,6 @@ bool SIFixSGPRCopies::run(MachineFunction &MF) {
   TRI = ST.getRegisterInfo();
   TII = ST.getInstrInfo();
 
-  // LLVM_DEBUG(dbgs() << "BEFORE: ");
-  // MF.dump();
-
   for (MachineBasicBlock &MBB : MF) {
     for (MachineBasicBlock::iterator I = MBB.begin(), E = MBB.end(); I != E;
          ++I) {
@@ -636,8 +633,6 @@ bool SIFixSGPRCopies::run(MachineFunction &MF) {
 
       switch (MI.getOpcode()) {
       default:
-        LLVM_DEBUG(dbgs()
-                       << "Skipping MI from si-fix-sgpr-copies: "; MI.dump());
         continue;
       case AMDGPU::COPY:
       case AMDGPU::WQM:
@@ -646,11 +641,6 @@ bool SIFixSGPRCopies::run(MachineFunction &MF) {
       case AMDGPU::STRICT_WWM: {
         const TargetRegisterClass *SrcRC, *DstRC;
         std::tie(SrcRC, DstRC) = getCopyRegClasses(MI, *TRI, *MRI);
-
-        if (TRI->getRegSizeInBits(*DstRC) == 64 && MI.getOperand(0).isReg() && MI.getOperand(0).getReg() == AMDGPU::EXEC){
-          LLVM_DEBUG(dbgs()
-                       << "FOUND A $EXEC WRITE: "; MI.dump());
-        }
 
         if (isSGPRToVGPRCopy(SrcRC, DstRC, *TRI)) {
           // Since VGPR to SGPR copies affect VGPR to SGPR copy
@@ -776,16 +766,9 @@ bool SIFixSGPRCopies::run(MachineFunction &MF) {
     }
   }
 
-  // LLVM_DEBUG(dbgs() << "ONE: ");
-  // MF.dump();
-
   lowerVGPR2SGPRCopies(MF);
-  // LLVM_DEBUG(dbgs() << "TWO: ");
-  // MF.dump();
   // Postprocessing
   fixSCCCopies(MF);
-  // LLVM_DEBUG(dbgs() << "THREE: ");
-  // MF.dump();
   for (auto *MI : S2VCopies) {
     // Check if it is still valid
     if (MI->isCopy()) {
@@ -795,24 +778,16 @@ bool SIFixSGPRCopies::run(MachineFunction &MF) {
         tryChangeVGPRtoSGPRinCopy(*MI, TRI, TII);
     }
   }
-  // LLVM_DEBUG(dbgs() << "FOUR: ");
-  // MF.dump();
   for (auto *MI : RegSequences) {
     // Check if it is still valid
     if (MI->isRegSequence())
       foldVGPRCopyIntoRegSequence(*MI, TRI, TII, *MRI);
   }
-  // LLVM_DEBUG(dbgs() << "FIVE: ");
-  // MF.dump();
   for (auto *MI : PHINodes) {
     processPHINode(*MI);
   }
-  // LLVM_DEBUG(dbgs() << "SIX: ");
-  // MF.dump();
   if (MF.getTarget().getOptLevel() > CodeGenOptLevel::None && EnableM0Merge)
     hoistAndMergeSGPRInits(AMDGPU::M0, *MRI, TRI, *MDT, TII);
-  // LLVM_DEBUG(dbgs() << "SEVEN: ");
-  // MF.dump();
 
   SiblingPenalty.clear();
   V2SCopies.clear();
@@ -906,10 +881,6 @@ bool SIFixSGPRCopies::lowerSpecialCase(MachineInstr &MI,
   Register DstReg = MI.getOperand(0).getReg();
   Register SrcReg = MI.getOperand(1).getReg();
   if (!DstReg.isVirtual()) {
-    if (MI.getOperand(0).isReg() && MI.getOperand(0).getReg() == AMDGPU::EXEC){
-          LLVM_DEBUG(dbgs()
-                       << "TRYING TO LOWER $EXEC CASE: "; MI.dump());
-    }
     // If the destination register is a physical register there isn't
     // really much we can do to fix this.
     // Some special instructions use M0 as an input. Some even only use
@@ -924,22 +895,6 @@ bool SIFixSGPRCopies::lowerSpecialCase(MachineInstr &MI,
       MI.getOperand(1).setReg(TmpReg);
     } else if (tryMoveVGPRConstToSGPR(MI.getOperand(1), DstReg, MI.getParent(),
                                       MI)) {
-      I = std::next(I);
-      MI.eraseFromParent();
-    } else if (DstReg == AMDGPU::EXEC && TRI->hasVectorRegisters(MRI->getRegClass(SrcReg))) {
-      const auto *SrcRC = MRI->getRegClass(SrcReg);
-      Register SubSrcReg1 = TII->buildExtractSubReg(
-        MI, *MRI, MI.getOperand(1), SrcRC,
-        TRI->getSubRegFromChannel(0), &AMDGPU::VGPR_32RegClass);
-      BuildMI(*MI.getParent(), &MI, MI.getDebugLoc(),
-          TII->get(AMDGPU::V_READFIRSTLANE_B32), AMDGPU::EXEC_LO)
-        .addReg(SubSrcReg1);
-      Register SubSrcReg2 = TII->buildExtractSubReg(
-        MI, *MRI, MI.getOperand(1), SrcRC,
-        TRI->getSubRegFromChannel(1), &AMDGPU::VGPR_32RegClass);
-      BuildMI(*MI.getParent(), &MI, MI.getDebugLoc(),
-          TII->get(AMDGPU::V_READFIRSTLANE_B32), AMDGPU::EXEC_HI)
-        .addReg(SubSrcReg2);
       I = std::next(I);
       MI.eraseFromParent();
     }
@@ -1025,15 +980,11 @@ void SIFixSGPRCopies::analyzeVGPRToSGPRCopy(MachineInstr* MI) {
 // The main function that computes the VGPR to SGPR copy score
 // and determines copy further lowering way: v_readfirstlane_b32 or moveToVALU
 bool SIFixSGPRCopies::needToBeConvertedToVALU(V2SCopyInfo *Info) {
+  if (Info->Copy->getOperand(0).isReg() && Info->Copy->getOperand(0).getReg() == AMDGPU::EXEC)
+    return false;
   if (Info->SChain.empty()) {
     Info->Score = 0;
     return true;
-  }
-  auto *MIP = Info->Copy;
-  auto &MI = *MIP;
-  if (MI.getOperand(0).isReg() && MI.getOperand(0).getReg() == AMDGPU::EXEC){
-     LLVM_DEBUG(dbgs()
-                  << "WERE TRYING TO SEE IF WE CAN CONVERTTOVALU: "; MI.dump());
   }
   Info->Siblings = SiblingPenalty[*llvm::max_element(
       Info->SChain, [&](MachineInstr *A, MachineInstr *B) -> bool {
