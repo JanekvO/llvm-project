@@ -476,7 +476,7 @@ define amdgpu_kernel void @v8i8_phi_zeroinit(ptr addrspace(1) %src1, ptr addrspa
 ; GFX906-NEXT:    v_mov_b32_e32 v1, 0
 ; GFX906-NEXT:    s_andn2_b64 s[0:1], s[0:1], exec
 ; GFX906-NEXT:    s_and_b64 s[4:5], vcc, exec
-; GFX906-NEXT:    v_mov_b32_e32 v2, v1
+; GFX906-NEXT:    v_mov_b32_e32 v2, 0
 ; GFX906-NEXT:    s_or_b64 s[0:1], s[0:1], s[4:5]
 ; GFX906-NEXT:  .LBB9_2: ; %Flow
 ; GFX906-NEXT:    s_or_b64 exec, exec, s[2:3]
