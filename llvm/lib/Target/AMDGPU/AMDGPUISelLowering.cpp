@@ -5140,6 +5140,12 @@ SDValue AMDGPUTargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::BITCAST: {
     EVT DestVT = N->getValueType(0);
 
+    if (Subtarget->isGCN()) {
+      const GCNSubtarget &ST = DAG.getSubtarget<GCNSubtarget>();
+      if (ST.hasMovB64())
+        break;
+    }
+
     // Push casts through vector builds. This helps avoid emitting a large
     // number of copies when materializing floating point vector constants.
     //
