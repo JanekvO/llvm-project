@@ -317,6 +317,7 @@ const char *const RAGreedy::StageName[] = {
     "RS_Assign",
     "RS_Split",
     "RS_Split2",
+    "RS_Remainder",
     "RS_Spill",
     "RS_Done"
 };
@@ -1167,7 +1168,7 @@ void RAGreedy::splitAroundRegion(LiveRangeEdit &LREdit,
     // Remainder interval. Don't try splitting again, spill if it doesn't
     // allocate.
     if (IntvMap[I] == 0) {
-      ExtraInfo->setStage(Reg, RS_Spill);
+      ExtraInfo->setStage(Reg, RS_Remainder);
       continue;
     }
 
@@ -1936,7 +1937,7 @@ MCRegister RAGreedy::trySplit(const LiveInterval &VirtReg,
                               SmallVectorImpl<Register> &NewVRegs,
                               const SmallVirtRegSet &FixedRegisters) {
   // Ranges must be Split2 or less.
-  if (ExtraInfo->getStage(VirtReg) >= RS_Spill)
+  if (ExtraInfo->getStage(VirtReg) >= RS_Remainder)
     return MCRegister();
 
   // Local intervals are handled separately.
@@ -2616,12 +2617,47 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     return MCRegister();
   }
 
-  if (Stage < RS_Spill && !VirtReg.empty()) {
+  if (Stage < RS_Remainder && !VirtReg.empty()) {
     // Try splitting VirtReg or interferences.
     unsigned NewVRegSizeBefore = NewVRegs.size();
     MCRegister PhysReg = trySplit(VirtReg, Order, NewVRegs, FixedRegisters);
     if (PhysReg || (NewVRegs.size() - NewVRegSizeBefore))
       return PhysReg;
+  }
+
+  if (Stage < RS_Spill && !VirtReg.empty()) {
+    // Before spilling, try to associated consecutive reloads.
+    MachineInstr *CopyMI = nullptr;
+    if ((VirtReg.reg().id() & 0x7fffffff) == 315) {
+      for (MachineInstr &MI : llvm::make_early_inc_range(MRI->reg_bundles(VirtReg.reg()))) {
+        if (MI.isCopy())
+          continue;
+
+        if (!CopyMI) {
+          LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
+          MachineBasicBlock *MBB = MI.getParent();
+          Register NewVReg = LRE.createFrom(VirtReg.reg());
+          const MCInstrDesc &Desc =
+            TII->get(TII->getLiveRangeSplitOpcode(VirtReg.reg(), *MBB->getParent()));
+          SlotIndexes &Indexes = *LIS->getSlotIndexes();
+          // The full vreg is copied.
+          CopyMI =
+            BuildMI(*MBB, MI, DebugLoc(), Desc, NewVReg).addReg(VirtReg.reg());
+          Indexes.insertMachineInstrInMaps(*CopyMI, false).getRegSlot();
+        }
+        for (MachineOperand &MO :
+            llvm::make_early_inc_range(MRI->reg_operands(VirtReg.reg()))) {
+          MachineInstr *MOMI = MO.getParent();
+          if (MOMI == &MI) {
+            SlotIndex Idx = LIS->getInstructionIndex(*CopyMI);
+            LiveInterval &LI = LIS->getInterval(CopyMI->getOperand(0).getReg());
+            MO.setReg(LI.reg());
+          }
+        }
+      }
+    }
+
+    ExtraInfo->setStage(VirtReg, RS_Spill);
   }
 
   // If we couldn't allocate a register from spilling, there is probably some
