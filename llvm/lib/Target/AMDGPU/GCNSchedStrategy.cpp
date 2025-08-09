@@ -718,8 +718,9 @@ void GCNScheduleDAGMILive::computeBlockPressure(unsigned RegionIdx,
 
   for (;;) {
     I = RPTracker.getNext();
+    auto *RegionNonDbgMI = &*skipDebugInstructionsForward(Regions[CurRegion].first, Regions[CurRegion].second);
 
-    if (Regions[CurRegion].first == I || NonDbgMI == I) {
+    if (Regions[CurRegion].first == I || RegionNonDbgMI == I) {
       LiveIns[CurRegion] = RPTracker.getLiveRegs();
       RPTracker.clearMaxPressure();
     }
