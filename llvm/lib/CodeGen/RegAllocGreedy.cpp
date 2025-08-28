@@ -2625,37 +2625,119 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
       return PhysReg;
   }
 
-  if (Stage < RS_Spill && !VirtReg.empty()) {
-    // Before spilling, try to associated consecutive reloads.
-    MachineInstr *CopyMI = nullptr;
-    if ((VirtReg.reg().id() & 0x7fffffff) == 315) {
-      for (MachineInstr &MI : llvm::make_early_inc_range(MRI->reg_bundles(VirtReg.reg()))) {
+  if (Stage == RS_Remainder && !VirtReg.empty()) {
+    if (!VirtReg.hasSubRanges() && VirtReg.segments.size() == 1) {
+      auto Order =
+          AllocationOrder::create(VirtReg.reg(), *VRM, RegClassInfo, Matrix);
+      SmallVector<SlotIndex, 8> RegUses;
+      MachineBasicBlock *CurMBB = nullptr;
+      bool skipCheck = false;
+      for (MachineInstr &MI :
+           llvm::make_early_inc_range(MRI->reg_bundles(VirtReg.reg()))) {
         if (MI.isCopy())
           continue;
-
-        if (!CopyMI) {
-          LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
-          MachineBasicBlock *MBB = MI.getParent();
-          Register NewVReg = LRE.createFrom(VirtReg.reg());
-          const MCInstrDesc &Desc =
-            TII->get(TII->getLiveRangeSplitOpcode(VirtReg.reg(), *MBB->getParent()));
-          SlotIndexes &Indexes = *LIS->getSlotIndexes();
-          // The full vreg is copied.
-          CopyMI =
-            BuildMI(*MBB, MI, DebugLoc(), Desc, NewVReg).addReg(VirtReg.reg());
-          Indexes.insertMachineInstrInMaps(*CopyMI, false).getRegSlot();
+        if (!CurMBB)
+          CurMBB = MI.getParent();
+        if (MI.getParent() != CurMBB) {
+          skipCheck = true;
+          continue;
         }
-        for (MachineOperand &MO :
-            llvm::make_early_inc_range(MRI->reg_operands(VirtReg.reg()))) {
-          MachineInstr *MOMI = MO.getParent();
-          if (MOMI == &MI) {
-            SlotIndex Idx = LIS->getInstructionIndex(*CopyMI);
-            LiveInterval &LI = LIS->getInterval(CopyMI->getOperand(0).getReg());
-            MO.setReg(LI.reg());
-          }
+
+        SlotIndex ValidSI = LIS->getInstructionIndex(MI);
+
+        if (ValidSI.isValid()) {
+          RegUses.push_back(ValidSI);
         }
       }
+
+      SlotIndex Start, End;
+      if (RegUses.empty() || RegUses.size() < 2) {
+        skipCheck = true;
+      } else {
+        Start = RegUses[0];
+        End = RegUses[RegUses.size() - 1];
+        for (SlotIndex SI : RegUses) {
+          Start = std::min(Start, SI, [](SlotIndex SI1, SlotIndex SI2) {
+            return SI1 < SI2;
+          });
+          End = std::max(Start, SI, [](SlotIndex SI1, SlotIndex SI2) {
+            return SI1 < SI2;
+          });
+        }
+      }
+
+      if (!skipCheck) {
+        MachineInstr *CopyMI = nullptr;
+        for (auto I = Order.begin(), E = Order.end(); I != E; ++I) {
+          assert(*I);
+          if (!Matrix->checkInterference(Start, End, *I)) {
+            MachineInstr &MI = *LIS->getInstructionFromIndex(Start);
+            // Found a possible non-interfering interval [start,end) to assign
+            // physreg to.
+            if (!CopyMI) {
+              LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this,
+                                &DeadRemats);
+              MachineBasicBlock *MBB = MI.getParent();
+              Register NewVReg = LRE.createFrom(VirtReg.reg());
+              const MCInstrDesc &Desc = TII->get(TII->getLiveRangeSplitOpcode(
+                  VirtReg.reg(), *MBB->getParent()));
+              SlotIndexes &Indexes = *LIS->getSlotIndexes();
+              // The full vreg is copied.
+              CopyMI = BuildMI(*MBB, MI, DebugLoc(), Desc, NewVReg)
+                           .addReg(VirtReg.reg());
+              Indexes.insertMachineInstrInMaps(*CopyMI, false).getRegSlot();
+            }
+            for (SlotIndex SI : RegUses) {
+              MachineInstr &MI = *LIS->getInstructionFromIndex(SI);
+              for (MachineOperand &MO : llvm::make_early_inc_range(
+                       MRI->reg_operands(VirtReg.reg()))) {
+                MachineInstr *MOMI = MO.getParent();
+                if (MOMI == &MI) {
+                  MO.setReg(CopyMI->getOperand(0).getReg());
+                }
+              }
+            }
+            break;
+          }
+        }
+        if (CopyMI)
+          LIS->createAndComputeVirtRegInterval(CopyMI->getOperand(0).getReg());
+      }
     }
+
+    // Before spilling, try to associated consecutive reloads.
+    // MachineInstr *CopyMI = nullptr;
+    // if ((VirtReg.reg().id() & 0x7fffffff) == 315) {
+    //   for (MachineInstr &MI :
+    //   llvm::make_early_inc_range(MRI->reg_bundles(VirtReg.reg()))) {
+    //     if (MI.isCopy())
+    //       continue;
+
+    //     if (!CopyMI) {
+    //       LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this,
+    //       &DeadRemats); MachineBasicBlock *MBB = MI.getParent(); Register
+    //       NewVReg = LRE.createFrom(VirtReg.reg()); const MCInstrDesc &Desc =
+    //         TII->get(TII->getLiveRangeSplitOpcode(VirtReg.reg(),
+    //         *MBB->getParent()));
+    //       SlotIndexes &Indexes = *LIS->getSlotIndexes();
+    //       // The full vreg is copied.
+    //       CopyMI =
+    //         BuildMI(*MBB, MI, DebugLoc(), Desc,
+    //         NewVReg).addReg(VirtReg.reg());
+    //       Indexes.insertMachineInstrInMaps(*CopyMI, false).getRegSlot();
+    //     }
+    //     for (MachineOperand &MO :
+    //         llvm::make_early_inc_range(MRI->reg_operands(VirtReg.reg()))) {
+    //       MachineInstr *MOMI = MO.getParent();
+    //       if (MOMI == &MI) {
+    //         SlotIndex Idx = LIS->getInstructionIndex(*CopyMI);
+    //         LiveInterval &LI =
+    //         LIS->getInterval(CopyMI->getOperand(0).getReg());
+    //         MO.setReg(LI.reg());
+    //       }
+    //     }
+    //   }
+    // }
 
     ExtraInfo->setStage(VirtReg, RS_Spill);
   }
