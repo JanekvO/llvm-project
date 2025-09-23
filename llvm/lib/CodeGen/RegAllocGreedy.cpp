@@ -2670,7 +2670,7 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
         MachineInstr *CopyMI = nullptr;
         for (auto I = Order.begin(), E = Order.end(); I != E; ++I) {
           assert(*I);
-          if (!Matrix->checkInterference(Start, End, *I)) {
+          if (!Matrix->checkInterference(Start, End, *I) && Matrix->checkInterference(VirtReg, *I) <= LiveRegMatrix::IK_VirtReg) {
             MachineInstr &MI = *LIS->getInstructionFromIndex(Start);
             // Found a possible non-interfering interval [start,end) to assign
             // physreg to.
