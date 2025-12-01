@@ -317,6 +317,7 @@ const char *const RAGreedy::StageName[] = {
     "RS_Assign",
     "RS_Split",
     "RS_Split2",
+    "RS_Remainder",
     "RS_Spill",
     "RS_Done"
 };
@@ -1168,7 +1169,7 @@ void RAGreedy::splitAroundRegion(LiveRangeEdit &LREdit,
     // Remainder interval. Don't try splitting again, spill if it doesn't
     // allocate.
     if (IntvMap[I] == 0) {
-      ExtraInfo->setStage(Reg, RS_Spill);
+      ExtraInfo->setStage(Reg, RS_Remainder);
       continue;
     }
 
@@ -1967,7 +1968,7 @@ MCRegister RAGreedy::trySplit(const LiveInterval &VirtReg,
                               SmallVectorImpl<Register> &NewVRegs,
                               const SmallVirtRegSet &FixedRegisters) {
   // Ranges must be Split2 or less.
-  if (ExtraInfo->getStage(VirtReg) >= RS_Spill)
+  if (ExtraInfo->getStage(VirtReg) >= RS_Remainder)
     return MCRegister();
 
   // Local intervals are handled separately.
@@ -2350,7 +2351,9 @@ MCRegister RAGreedy::selectOrSplit(const LiveInterval &VirtReg,
 MCRegister RAGreedy::tryAssignCSRFirstTime(
     const LiveInterval &VirtReg, AllocationOrder &Order, MCRegister PhysReg,
     uint8_t &CostPerUseLimit, SmallVectorImpl<Register> &NewVRegs) {
-  if (ExtraInfo->getStage(VirtReg) == RS_Spill && VirtReg.isSpillable()) {
+  unsigned CurStage = ExtraInfo->getStage(VirtReg);
+  if ((CurStage == RS_Spill || CurStage == RS_Remainder) &&
+      VirtReg.isSpillable()) {
     // We choose spill over using the CSR for the first time if the spill cost
     // is lower than CSRCost.
     SA->analyze(&VirtReg);
@@ -2665,12 +2668,96 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     return MCRegister();
   }
 
-  if (Stage < RS_Spill && !VirtReg.empty()) {
+  if (Stage < RS_Remainder && !VirtReg.empty()) {
     // Try splitting VirtReg or interferences.
     unsigned NewVRegSizeBefore = NewVRegs.size();
     MCRegister PhysReg = trySplit(VirtReg, Order, NewVRegs, FixedRegisters);
     if (PhysReg || (NewVRegs.size() - NewVRegSizeBefore))
       return PhysReg;
+  }
+
+  if (Stage == RS_Remainder && !VirtReg.empty()) {
+    if (VirtReg.segments.size() == 1 && !VirtReg.hasSubRanges()) {
+      // Gather uses of VirtReg, mapped from its respective MBB.
+      DenseMap<MachineBasicBlock *, SmallVector<MachineInstr *, 8>> UsesMap;
+      for (MachineInstr &MI : MRI->reg_bundles(VirtReg.reg())) {
+        // Remainder interval will have a copy start/end from splitting; eliding
+        // these copies will leave us with the uses.
+        if (MI.isDebugInstr() || MI.isCopy())
+          continue;
+        SlotIndex Idx = LIS->getInstructionIndex(MI);
+        if (Idx.isValid())
+          UsesMap[MI.getParent()].push_back(&MI);
+      }
+
+      // Per MBB, check if multiple uses exist within and whether they can be
+      // assigned the same register. Note that every MBB where this might apply
+      // will still conservatively explicitly reload at least once in case
+      // control flow isn't. Additionally, modifying the MIs (VirtReg uses)
+      // won't end up invalidating UsesMap as it is populated at remainder
+      // interval state that matters.
+      for (auto &[MBB, MIs] : UsesMap) {
+        if (MIs.size() < 2)
+          continue;
+
+        SlotIndex Start, End;
+        Start = End = LIS->getInstructionIndex(*MIs.front());
+
+        for (auto *MI : MIs) {
+          SlotIndex SI = LIS->getInstructionIndex(*MI);
+          Start = std::min(Start, SI);
+          End = std::max(End, SI);
+        }
+
+        auto Order =
+            AllocationOrder::create(VirtReg.reg(), *VRM, RegClassInfo, Matrix);
+
+        MCRegister FoundReg;
+        for (auto PhysReg : Order) {
+          // Second conditional also required for regmask and lane interference
+          // checks.
+          if (!Matrix->checkInterference(Start, End, PhysReg) &&
+              Matrix->checkInterference(VirtReg, PhysReg) <=
+                  LiveRegMatrix::IK_VirtReg) {
+            FoundReg = PhysReg;
+            break;
+          }
+        }
+
+        if (!FoundReg)
+          continue;
+
+        // Found a register that can be used for multiple uses within MBB.
+        // Rewrite  uses to depend on a newly introduced virtual register s.t.
+        // they can be assigned the same register.
+        LiveRangeEdit LRE(&VirtReg, NewVRegs, *MF, *LIS, VRM, this,
+                          &DeadRemats);
+        Register NewVReg = LRE.createFrom(VirtReg.reg());
+        const MCInstrDesc &Desc = TII->get(
+            TII->getLiveRangeSplitOpcode(VirtReg.reg(), *MBB->getParent()));
+        SlotIndexes &Indexes = *LIS->getSlotIndexes();
+        MachineInstr &StartMI = *LIS->getInstructionFromIndex(Start);
+        MachineInstr *CopyMI = BuildMI(*MBB, StartMI, DebugLoc(), Desc, NewVReg)
+                                   .addReg(VirtReg.reg());
+        Indexes.insertMachineInstrInMaps(*CopyMI, false);
+        NewVRegs.push_back(NewVReg);
+        for (auto *MI : MIs) {
+          for (MachineOperand &MO :
+               make_early_inc_range(MRI->reg_operands(VirtReg.reg()))) {
+            if (MO.isReg() && MO.getParent() == MI)
+              MO.setReg(CopyMI->getOperand(0).getReg());
+          }
+        }
+
+        LIS->removeInterval(VirtReg.reg());
+        LIS->createAndComputeVirtRegInterval(VirtReg.reg());
+        LIS->createAndComputeVirtRegInterval(NewVReg);
+      }
+    }
+    // Original VirtReg should continue spilling path. We may have changed its
+    // uses to a newly introduced virtual register but the orignal is still
+    // subject to spilling logic.
+    ExtraInfo->setStage(VirtReg, RS_Spill);
   }
 
   // If we couldn't allocate a register from spilling, there is probably some

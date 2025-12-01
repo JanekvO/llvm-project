@@ -63,6 +63,9 @@ enum LiveRangeStage {
   /// progress.
   RS_Split2,
 
+  /// Remainder interval processing, will end up as spill but first will attempt to coalesce same-reloads within the interval marked for spilling.
+  RS_Remainder,
+
   /// Live range will be spilled.  No more splitting will be attempted.
   RS_Spill,
 
