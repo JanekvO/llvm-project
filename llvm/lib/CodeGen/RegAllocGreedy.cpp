@@ -2742,9 +2742,8 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
         Indexes.insertMachineInstrInMaps(*CopyMI, false);
         NewVRegs.push_back(NewVReg);
         for (auto *MI : MIs) {
-          for (MachineOperand &MO :
-               make_early_inc_range(MRI->reg_operands(VirtReg.reg()))) {
-            if (MO.isReg() && MO.getParent() == MI)
+          for (MachineOperand &MO : MI->uses()) {
+            if (MO.getReg() == VirtReg.reg())
               MO.setReg(CopyMI->getOperand(0).getReg());
           }
         }
@@ -2752,6 +2751,7 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
         LIS->removeInterval(VirtReg.reg());
         LIS->createAndComputeVirtRegInterval(VirtReg.reg());
         LIS->createAndComputeVirtRegInterval(NewVReg);
+        DebugVars->splitRegister(VirtReg.reg(), {NewVReg}, *LIS);
       }
     }
     // Original VirtReg should continue spilling path. We may have changed its
