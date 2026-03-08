@@ -178,7 +178,42 @@ static bool lowerExecSyncGlobalVariables(
   return Changed;
 }
 
+// With object linking, barrier ID assignment is deferred to the linker.
+// Externalize named barrier globals and emit self-contained metadata so the
+// AsmPrinter can generate the callgraph entries the linker needs.
+static bool handleNamedBarriersForObjectLinking(Module &M) {
+  DenseMap<GlobalVariable *, DenseSet<Function *>> BarrierToFuncs;
+  for (auto &GV : M.globals()) {
+    if (!isNamedBarrier(GV) || GV.use_empty())
+      continue;
+    for (User *U : GV.users()) {
+      if (auto *I = dyn_cast<Instruction>(U))
+        BarrierToFuncs[&GV].insert(I->getFunction());
+    }
+  }
+  if (BarrierToFuncs.empty())
+    return false;
+
+  LLVMContext &Ctx = M.getContext();
+  auto *BarMD = M.getOrInsertNamedMetadata("amdgpu.callgraph.named_barriers");
+
+  for (auto &[V, Funcs] : BarrierToFuncs) {
+    V->setInitializer(nullptr);
+    V->setLinkage(GlobalValue::ExternalLinkage);
+
+    SmallVector<Metadata *, 4> Ops;
+    Ops.push_back(ValueAsMetadata::get(V));
+    for (Function *F : Funcs)
+      Ops.push_back(ValueAsMetadata::get(F));
+    BarMD->addOperand(MDNode::get(Ctx, Ops));
+  }
+  return true;
+}
+
 static bool runLowerExecSyncGlobals(Module &M) {
+  if (AMDGPUTargetMachine::EnableObjectLinking)
+    return handleNamedBarriersForObjectLinking(M);
+
   CallGraph CG = CallGraph(M);
   bool Changed = false;
   Changed |= eliminateConstantExprUsesOfLDSFromAllInstructions(M);
