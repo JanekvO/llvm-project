@@ -860,7 +860,8 @@ void AMDGPUAsmPrinter::emitResourceUsageSection() {
 
   // Section header.
   const uint32_t Version = 1;
-  const uint32_t EntrySize = 36;
+  const uint32_t EntrySize = 28;
+  const uint32_t HeaderSize = 16;
   uint32_t Flags = 0;
   if (CachedHasAccumOffset)
     Flags |= 0x1;
@@ -874,10 +875,23 @@ void AMDGPUAsmPrinter::emitResourceUsageSection() {
   OutStreamer->emitInt32(Flags);
   OutStreamer->emitInt32(0); // reserved
 
-  for (const auto &Info : FunctionResourceInfos) {
+  for (unsigned EntryIdx = 0; EntryIdx < FunctionResourceInfos.size();
+       ++EntryIdx) {
+    const auto &Info = FunctionResourceInfos[EntryIdx];
     const auto &RI = Info.RI;
     MCSymbol *Sym = getSymbol(Info.F);
-    OutStreamer->emitValue(MCSymbolRefExpr::create(Sym, OutContext), 8);
+
+    // Emit R_AMDGPU_NONE relocation at the entry's offset within the section
+    // to associate this entry with the function symbol.
+    auto *SectionSym =
+        MCSymbolRefExpr::create(RUSection->getBeginSymbol(), OutContext);
+    auto *Offset = MCBinaryExpr::createAdd(
+        SectionSym,
+        MCConstantExpr::create(HeaderSize + EntryIdx * EntrySize, OutContext),
+        OutContext);
+    OutStreamer->emitRelocDirective(*Offset, "R_AMDGPU_NONE",
+                                   MCSymbolRefExpr::create(Sym, OutContext));
+
     OutStreamer->emitInt32(RI.NumVGPR);
     OutStreamer->emitInt32(RI.NumAGPR);
     OutStreamer->emitInt32(RI.NumExplicitSGPR);

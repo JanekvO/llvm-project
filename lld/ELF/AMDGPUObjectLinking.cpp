@@ -417,7 +417,10 @@ static bool parseResourceUsageSection(Ctx &ctx, ObjFile<ELFT> *obj,
     return false;
   }
 
-  SmallVector<uint32_t, 32> symbolIndices;
+  // Build a map from relocation offset to symbol index. Each R_AMDGPU_NONE
+  // relocation's offset identifies which entry it belongs to (offset =
+  // headerSize + entryIndex * entrySize).
+  DenseMap<uint64_t, uint32_t> relocOffsetToSymIdx;
   for (size_t i = 0, e = objSections.size(); i < e; ++i) {
     const auto &relSec = objSections[i];
     if (relSec.sh_info != obj->amdgpuResourceUsageSectionIndex)
@@ -427,7 +430,7 @@ static bool parseResourceUsageSection(Ctx &ctx, ObjFile<ELFT> *obj,
           CHECK(elfObj.relas(relSec),
                 "could not read .amdgpu.resource_usage rela section");
       for (const auto &rel : relas)
-        symbolIndices.push_back(rel.getSymbol(false));
+        relocOffsetToSymIdx[rel.r_offset] = rel.getSymbol(false);
       break;
     }
     if (relSec.sh_type == SHT_REL) {
@@ -435,16 +438,16 @@ static bool parseResourceUsageSection(Ctx &ctx, ObjFile<ELFT> *obj,
           CHECK(elfObj.rels(relSec),
                 "could not read .amdgpu.resource_usage rel section");
       for (const auto &rel : rels)
-        symbolIndices.push_back(rel.getSymbol(false));
+        relocOffsetToSymIdx[rel.r_offset] = rel.getSymbol(false);
       break;
     }
     if (relSec.sh_type == SHT_CREL) {
       auto crels = CHECK(elfObj.crels(relSec),
                          "could not read .amdgpu.resource_usage crel section");
       for (const auto &rel : crels.first)
-        symbolIndices.push_back(rel.getSymbol(false));
+        relocOffsetToSymIdx[rel.r_offset] = rel.getSymbol(false);
       for (const auto &rel : crels.second)
-        symbolIndices.push_back(rel.getSymbol(false));
+        relocOffsetToSymIdx[rel.r_offset] = rel.getSymbol(false);
       break;
     }
   }
@@ -452,17 +455,26 @@ static bool parseResourceUsageSection(Ctx &ctx, ObjFile<ELFT> *obj,
   size_t dataAfterHeader = data.size() - headerSize;
   size_t numEntries =
       header.entrySize > 0 ? dataAfterHeader / header.entrySize : 0;
-  if (symbolIndices.size() != numEntries) {
+  if (relocOffsetToSymIdx.size() != numEntries) {
     Err(ctx) << obj
              << ": .amdgpu.resource_usage entry/relocation count mismatch: "
-             << numEntries << " entries vs " << symbolIndices.size()
+             << numEntries << " entries vs " << relocOffsetToSymIdx.size()
              << " relocations";
     return false;
   }
 
   for (size_t i = 0; i < numEntries; ++i) {
     size_t entryOff = headerSize + i * header.entrySize;
-    const uint8_t *p = data.data() + entryOff + 8;
+
+    auto it = relocOffsetToSymIdx.find(entryOff);
+    if (it == relocOffsetToSymIdx.end()) {
+      Err(ctx) << obj
+               << ": .amdgpu.resource_usage missing relocation for entry "
+               << i << " at offset " << entryOff;
+      return false;
+    }
+
+    const uint8_t *p = data.data() + entryOff;
     FunctionResourceInfo info;
     info.numArchVGPR = read32le(p);
     info.numAccVGPR = read32le(p + 4);
@@ -474,10 +486,10 @@ static bool parseResourceUsageSection(Ctx &ctx, ObjFile<ELFT> *obj,
     info.usesFlatScratch = (flags >> 1) & 0x1;
     info.hasDynSizedStack = (flags >> 2) & 0x1;
 
-    if (header.entrySize >= 36)
+    if (header.entrySize >= 28)
       info.occupancyLDSLimit = read32le(p + 24);
 
-    Symbol &sym = obj->getSymbol(symbolIndices[i]);
+    Symbol &sym = obj->getSymbol(it->second);
     if (sym.getName().empty())
       continue;
 
