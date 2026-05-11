@@ -3,9 +3,7 @@
 
 ; GCN-LABEL: .amdhsa_kernel large
 ; GFX11: .amdhsa_inst_pref_size 3
-; GFX11: codeLenInByte = 3{{[0-9][0-9]$}}
 ; GFX12: .amdhsa_inst_pref_size 4
-; GFX12: codeLenInByte = 4{{[0-9][0-9]$}}
 define amdgpu_kernel void @large(ptr addrspace(1) %out, ptr addrspace(1) %in) {
 bb:
   call void @llvm.memcpy.p1.p3.i32(ptr addrspace(1) %out, ptr addrspace(1) %in, i32 256, i1 false)
@@ -14,7 +12,6 @@ bb:
 
 ; GCN-LABEL: .amdhsa_kernel small
 ; GCN: .amdhsa_inst_pref_size 1
-; GCN: codeLenInByte = {{[0-9]$}}
 define amdgpu_kernel void @small() {
 bb:
   ret void
@@ -24,9 +21,16 @@ bb:
 
 ; GCN-LABEL: .amdhsa_kernel inline_asm
 ; GCN: .amdhsa_inst_pref_size 1
-; GCN: codeLenInByte = {{[0-9]$}}
 define amdgpu_kernel void @inline_asm() {
 bb:
   call void asm sideeffect ".fill 256, 4, 0", ""()
   ret void
 }
+
+; GCN: ; large Kernel info:
+; GFX11: codeLenInByte = 3{{[0-9][0-9]$}}
+; GFX12: codeLenInByte = 4{{[0-9][0-9]$}}
+; GCN: ; small Kernel info:
+; GCN: codeLenInByte = {{[0-9]$}}
+; GCN: ; inline_asm Kernel info:
+; GCN: codeLenInByte = {{[0-9]$}}
