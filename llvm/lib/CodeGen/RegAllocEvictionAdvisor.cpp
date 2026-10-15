@@ -218,7 +218,7 @@ bool RegAllocEvictionAdvisor::isUrgentEviction(const LiveInterval &VirtReg,
 bool DefaultEvictionAdvisor::shouldEvict(const LiveInterval &A, bool IsHint,
                                          const LiveInterval &B,
                                          bool BreaksHint) const {
-  bool CanSplit = RA.getExtraInfo().getStage(B) < RS_Spill;
+  bool CanSplit = RA.getExtraInfo().getStage(B) < RS_Remainder;
 
   // Be fairly aggressive about following hints as long as the evictee can be
   // split.

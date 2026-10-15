@@ -82,6 +82,7 @@ using namespace llvm;
 STATISTIC(NumGlobalSplits, "Number of split global live ranges");
 STATISTIC(NumLocalSplits,  "Number of split local live ranges");
 STATISTIC(NumEvicted,      "Number of interferences evicted");
+STATISTIC(NumRemainderRuns, "Number of reload runs split from spilled ranges");
 
 static cl::opt<SplitEditor::ComplementSpillMode> SplitSpillMode(
     "split-spill-mode", cl::Hidden,
@@ -144,6 +145,12 @@ static cl::opt<unsigned> SplitThresholdForRegWithHint(
     cl::desc("The threshold for splitting a virtual register with a hint, in "
              "percentage"),
     cl::init(75), cl::Hidden);
+
+static cl::opt<bool> GreedyRemainderSplit(
+    "greedy-remainder-split",
+    cl::desc("Before spilling a live range, split runs of nearby uses that can "
+             "share a register so that each run is reloaded only once"),
+    cl::init(true), cl::Hidden);
 
 static RegisterRegAlloc greedyRegAlloc("greedy", "greedy register allocator",
                                        createGreedyRegisterAllocator);
@@ -321,6 +328,7 @@ const char *const RAGreedy::StageName[] = {
     "RS_Assign",
     "RS_Split",
     "RS_Split2",
+    "RS_Remainder",
     "RS_Spill",
     "RS_Done"
 };
@@ -1181,7 +1189,7 @@ void RAGreedy::splitAroundRegion(LiveRangeEdit &LREdit,
     // Remainder interval. Don't try splitting again, spill if it doesn't
     // allocate.
     if (IntvMap[I] == 0) {
-      ExtraInfo->setStage(Reg, RS_Spill);
+      ExtraInfo->setStage(Reg, RS_Remainder);
       continue;
     }
 
@@ -1498,7 +1506,7 @@ MCRegister RAGreedy::tryBlockSplit(const LiveInterval &VirtReg,
   for (unsigned I = 0, E = LREdit.size(); I != E; ++I) {
     const LiveInterval &LI = LIS->getInterval(LREdit.get(I));
     if (ExtraInfo->getOrInitStage(LI.reg()) == RS_New && IntvMap[I] == 0)
-      ExtraInfo->setStage(LI, RS_Spill);
+      ExtraInfo->setStage(LI, RS_Remainder);
   }
 
   if (VerifyEnabled)
@@ -1655,6 +1663,111 @@ MCRegister RAGreedy::tryInstructionSplit(const LiveInterval &VirtReg,
   // Assign all new registers to RS_Spill. This was the last chance.
   ExtraInfo->setStage(LREdit.begin(), LREdit.end(), RS_Spill);
   return MCRegister();
+}
+
+//===----------------------------------------------------------------------===//
+//                             Remainder Splitting
+//===----------------------------------------------------------------------===//
+
+/// tryRemainderSplit - VirtReg is about to be spilled, which reloads it in
+/// front of every use. Uses that are close to each other then reload the same
+/// value, often into the same register. Instead, group the uses in each block
+/// into runs of consecutive uses for which a single register is still free
+/// from the start of the run to its last use, and split every run of two or
+/// more uses into its own interval. Only the complement is spilled, so each run
+/// is reloaded once, at its start.
+///
+/// The new intervals and the complement get RS_Spill: a run that cannot be
+/// assigned after all is spilled like before, and no range is split twice.
+/// Return true if VirtReg was split.
+bool RAGreedy::tryRemainderSplit(const LiveInterval &VirtReg,
+                                 AllocationOrder &Order,
+                                 SmallVectorImpl<Register> &NewVRegs) {
+  SA->analyze(&VirtReg);
+  ArrayRef<SlotIndex> Uses = SA->getUseSlots();
+  if (Uses.size() < 2)
+    return false;
+
+  // The first and last use of each run.
+  SmallVector<std::pair<SlotIndex, SlotIndex>, 8> Runs;
+  const MachineBasicBlock *RunMBB = nullptr;
+  SlotIndex RunFirst, RunLast;
+  unsigned RunUses = 0;
+  MCRegister RunPhysReg;
+
+  auto CloseRun = [&]() {
+    if (RunUses > 1)
+      Runs.emplace_back(RunFirst, RunLast);
+    RunUses = 0;
+    RunPhysReg = MCRegister();
+  };
+  auto OpenRun = [&](SlotIndex Use, const MachineBasicBlock *MBB) {
+    RunMBB = MBB;
+    RunFirst = RunLast = Use;
+    RunUses = 1;
+  };
+  // Is PhysReg free from the start of the run up to the use at UseIdx?
+  auto IsFreeUntil = [&](MCRegister PhysReg, SlotIndex UseIdx) {
+    return !Matrix->checkInterference(RunFirst.getBaseIndex(), UseIdx, PhysReg);
+  };
+
+  for (SlotIndex Use : Uses) {
+    const MachineInstr *MI = Indexes->getInstructionFromIndex(Use);
+    if (!MI || MI->modifiesRegister(VirtReg.reg(), TRI)) {
+      // A new value. Don't keep a run going across it.
+      CloseRun();
+      continue;
+    }
+    // A copy within a run reads the run's register, but copies don't start or
+    // extend a run themselves; the spiller folds their reload instead.
+    if (TII->isFullCopyInstr(*MI) || !MI->readsVirtualRegister(VirtReg.reg()))
+      continue;
+
+    if (RunUses && MI->getParent() != RunMBB)
+      CloseRun();
+    if (!RunUses) {
+      OpenRun(Use, MI->getParent());
+      continue;
+    }
+
+    if (!RunPhysReg || !IsFreeUntil(RunPhysReg, Use)) {
+      RunPhysReg = MCRegister();
+      for (MCRegister PhysReg : Order) {
+        if (IsFreeUntil(PhysReg, Use)) {
+          RunPhysReg = PhysReg;
+          break;
+        }
+      }
+    }
+    if (!RunPhysReg) {
+      CloseRun();
+      OpenRun(Use, MI->getParent());
+      continue;
+    }
+    RunLast = Use;
+    ++RunUses;
+  }
+  CloseRun();
+
+  if (Runs.empty())
+    return false;
+
+  LLVM_DEBUG(dbgs() << "Split " << Runs.size() << " reload runs.\n");
+  LiveRangeEdit LREdit(&VirtReg, NewVRegs, *MF, *LIS, VRM, this, &DeadRemats);
+  SE->reset(LREdit, SplitEditor::SM_Size);
+  for (auto [First, Last] : Runs) {
+    SE->openIntv();
+    SlotIndex SegStart = SE->enterIntvBefore(First);
+    SlotIndex SegStop = SE->leaveIntvAfter(Last);
+    SE->useIntv(SegStart, SegStop);
+  }
+
+  SmallVector<unsigned, 8> IntvMap;
+  SE->finish(&IntvMap);
+  DebugVars->splitRegister(VirtReg.reg(), LREdit.regs(), *LIS);
+  ExtraInfo->setStage(LREdit.begin(), LREdit.end(), RS_Spill);
+  NumRemainderRuns += Runs.size();
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1980,7 +2093,7 @@ MCRegister RAGreedy::trySplit(const LiveInterval &VirtReg,
                               SmallVectorImpl<Register> &NewVRegs,
                               const SmallVirtRegSet &FixedRegisters) {
   // Ranges must be Split2 or less.
-  if (ExtraInfo->getStage(VirtReg) >= RS_Spill)
+  if (ExtraInfo->getStage(VirtReg) >= RS_Remainder)
     return MCRegister();
 
   // Local intervals are handled separately.
@@ -2387,7 +2500,8 @@ BlockFrequency RAGreedy::calcSpillCost(const LiveInterval &LI) {
 MCRegister RAGreedy::tryAssignCSRFirstTime(
     const LiveInterval &VirtReg, AllocationOrder &Order, MCRegister PhysReg,
     uint8_t &CostPerUseLimit, SmallVectorImpl<Register> &NewVRegs) {
-  if (ExtraInfo->getStage(VirtReg) == RS_Spill && VirtReg.isSpillable()) {
+  LiveRangeStage Stage = ExtraInfo->getStage(VirtReg);
+  if ((Stage == RS_Remainder || Stage == RS_Spill) && VirtReg.isSpillable()) {
     // We choose spill over using the CSR for the first time if the spill cost
     // is lower than CSRCost.
     SA->analyze(&VirtReg);
@@ -2718,7 +2832,7 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     return MCRegister();
   }
 
-  if (Stage < RS_Spill && !VirtReg.empty()) {
+  if (Stage < RS_Remainder && !VirtReg.empty()) {
     // Try splitting VirtReg or interferences.
     unsigned NewVRegSizeBefore = NewVRegs.size();
     MCRegister PhysReg = trySplit(VirtReg, Order, NewVRegs, FixedRegisters);
@@ -2732,6 +2846,12 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     return tryLastChanceRecoloring(VirtReg, Order, NewVRegs, FixedRegisters,
                                    RecolorStack, Depth);
   }
+
+  // Before spilling, give runs of nearby uses a register of their own so that
+  // they share a single reload.
+  if (Stage < RS_Spill && GreedyRemainderSplit &&
+      tryRemainderSplit(VirtReg, Order, NewVRegs))
+    return MCRegister();
 
   // Finally spill VirtReg itself.
   NamedRegionTimer T("spill", "Spiller", TimerGroupName,

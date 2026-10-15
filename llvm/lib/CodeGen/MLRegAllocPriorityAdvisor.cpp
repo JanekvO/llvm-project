@@ -357,7 +357,7 @@ float MLPriorityAdvisor::getPriorityImpl(const LiveInterval &LI) const {
   LiveRangeStage Stage = RA.getExtraInfo().getStage(LI);
 
   *Runner->getTensor<int64_t>(0) = static_cast<int64_t>(Size);
-  *Runner->getTensor<int64_t>(1) = static_cast<int64_t>(Stage);
+  *Runner->getTensor<int64_t>(1) = getLiveRangeStageFeature(Stage);
   *Runner->getTensor<float>(2) = static_cast<float>(LI.weight());
 
   return Runner->evaluate<float>();

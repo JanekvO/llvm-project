@@ -63,6 +63,11 @@ enum LiveRangeStage {
   /// progress.
   RS_Split2,
 
+  /// Live range will be spilled, but first its uses in each block are grouped
+  /// into runs that can share a register, so that each run is reloaded once
+  /// rather than once per use.  No more splitting will be attempted.
+  RS_Remainder,
+
   /// Live range will be spilled.  No more splitting will be attempted.
   RS_Spill,
 
@@ -70,6 +75,13 @@ enum LiveRangeStage {
   /// if it can't be assigned.
   RS_Done
 };
+
+/// The stage as a feature for the ML advisors, whose models predate
+/// RS_Remainder: it is reported as RS_Spill, and the later stages keep their
+/// previous values.
+inline int64_t getLiveRangeStageFeature(LiveRangeStage Stage) {
+  return Stage > RS_Remainder ? Stage - 1 : Stage;
+}
 
 /// Cost of evicting interference - used by default advisor, and the eviction
 /// chain heuristic in RegAllocGreedy.

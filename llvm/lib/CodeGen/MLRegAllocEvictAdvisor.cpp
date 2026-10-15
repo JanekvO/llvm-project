@@ -926,9 +926,9 @@ void MLEvictAdvisor::extractFeatures(
   for (const auto *L : Intervals) {
     const LiveInterval &LI = *L;
     MaxStage = std::max<int64_t>(
-        MaxStage, static_cast<int64_t>(RA.getExtraInfo().getStage(LI)));
+        MaxStage, getLiveRangeStageFeature(RA.getExtraInfo().getStage(LI)));
     MinStage = std::min<int64_t>(
-        MinStage, static_cast<int64_t>(RA.getExtraInfo().getStage(LI)));
+        MinStage, getLiveRangeStageFeature(RA.getExtraInfo().getStage(LI)));
 
     TotalWeight = std::max(TotalWeight, LI.weight());
 

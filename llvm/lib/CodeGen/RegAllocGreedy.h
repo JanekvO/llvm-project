@@ -366,6 +366,8 @@ private:
                            SmallVectorImpl<Register> &);
   MCRegister tryInstructionSplit(const LiveInterval &, AllocationOrder &,
                                  SmallVectorImpl<Register> &);
+  bool tryRemainderSplit(const LiveInterval &, AllocationOrder &,
+                         SmallVectorImpl<Register> &);
   MCRegister tryLocalSplit(const LiveInterval &, AllocationOrder &,
                            SmallVectorImpl<Register> &);
   MCRegister trySplit(const LiveInterval &, AllocationOrder &,
