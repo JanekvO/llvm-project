@@ -1677,6 +1677,10 @@ MCRegister RAGreedy::tryInstructionSplit(const LiveInterval &VirtReg,
 /// more uses into its own interval. Only the complement is spilled, so each run
 /// is reloaded once, at its start.
 ///
+/// Uses at which the spiller would rematerialize the value instead of reloading
+/// it are left to the spiller: it recreates the value there without holding a
+/// register in between, so grouping them would only add register pressure.
+///
 /// The new intervals and the complement get RS_Spill: a run that cannot be
 /// assigned after all is spilled like before, and no range is split twice.
 /// Return true if VirtReg was split.
@@ -1710,6 +1714,23 @@ bool RAGreedy::tryRemainderSplit(const LiveInterval &VirtReg,
   auto IsFreeUntil = [&](MCRegister PhysReg, SlotIndex UseIdx) {
     return !Matrix->checkInterference(RunFirst.getBaseIndex(), UseIdx, PhysReg);
   };
+  // Would the spiller rematerialize the value at the use at UseIdx? Same test
+  // as InlineSpiller::reMaterializeFor: the original defining instruction must
+  // be rematerializable, and its operands available at the use.
+  Register Orig = VRM->getOriginal(VirtReg.reg());
+  const LiveInterval *OrigLI =
+      LIS->hasInterval(Orig) ? &LIS->getInterval(Orig) : nullptr;
+  auto IsRematerializableAt = [&](SlotIndex UseIdx) {
+    if (!OrigLI)
+      return false;
+    UseIdx = UseIdx.getBaseIndex().getRegSlot(true);
+    const VNInfo *OrigVNI = OrigLI->getVNInfoAt(UseIdx);
+    if (!OrigVNI || OrigVNI->isPHIDef())
+      return false;
+    const MachineInstr *OrigMI = LIS->getInstructionFromIndex(OrigVNI->def);
+    return OrigMI && TII->isReMaterializable(*OrigMI) &&
+           VirtRegAuxInfo::allUsesAvailableAt(OrigMI, UseIdx, *LIS, *MRI, *TII);
+  };
 
   for (SlotIndex Use : Uses) {
     const MachineInstr *MI = Indexes->getInstructionFromIndex(Use);
@@ -1721,6 +1742,9 @@ bool RAGreedy::tryRemainderSplit(const LiveInterval &VirtReg,
     // A copy within a run reads the run's register, but copies don't start or
     // extend a run themselves; the spiller folds their reload instead.
     if (TII->isFullCopyInstr(*MI) || !MI->readsVirtualRegister(VirtReg.reg()))
+      continue;
+    // Likewise for uses the spiller rematerializes the value for.
+    if (IsRematerializableAt(Use))
       continue;
 
     if (RunUses && MI->getParent() != RunMBB)
